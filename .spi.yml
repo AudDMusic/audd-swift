@@ -1,0 +1,10 @@
+# Swift Package Index manifest. See https://swiftpackageindex.com/SwiftPackageIndex/SPIManifest
+#
+# Tells SPI to auto-generate and host DocC documentation for the AudD
+# library target — output appears at
+# https://swiftpackageindex.com/AudDMusic/audd-swift/documentation
+version: 1
+builder:
+  configs:
+    - documentation_targets:
+        - AudD
