@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test-linux:
+    name: tests (Linux, Swift ${{ matrix.swift }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Released Swift toolchains only. There is no 5.11 — the line after 5.10
+        # is 6.0. Add newer compilers here once we've smoke-tested locally.
+        swift: ['5.10', '6.0']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: SwiftyLab/setup-swift@latest
+        with:
+          swift-version: ${{ matrix.swift }}
+      - name: swift build
+        run: swift build
+      - name: swift test
+        run: swift test
+      - name: Strict-concurrency check (Swift 6 only)
+        if: matrix.swift == '6.0'
+        run: swift build -Xswiftc -strict-concurrency=complete
+
+  test-macos:
+    name: tests (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: swift build
+        run: swift build
+      - name: swift test
+        run: swift test
+      - name: Build DocC catalog
+        run: swift package --allow-writing-to-directory ./.docc-build generate-documentation --target AudD --output-path ./.docc-build

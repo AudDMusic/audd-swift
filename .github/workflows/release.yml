@@ -1,0 +1,22 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'audd-swift/v*'
+      - 'v*'
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify tagged release builds and tests pass
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: swift build (release)
+        run: swift build -c release
+      - name: swift test
+        run: swift test
+      - name: Build DocC
+        run: swift package generate-documentation --target AudD
