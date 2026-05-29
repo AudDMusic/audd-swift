@@ -156,15 +156,15 @@ func formatNow() -> String {
 /// catalog releases).
 func csvRows(for match: StreamCallbackMatch, receivedAt: String) -> [String] {
     var rows: [String] = []
-    let songs = [match.song] + match.alternatives
+    let songs = [match.song].compactMap { $0 } + match.alternatives
     for song in songs {
         rows.append(csvRow([
             receivedAt,
-            String(match.radioID),
+            match.radioID.map(String.init) ?? "",
             match.timestamp ?? "",
-            String(song.score),
-            song.artist,
-            song.title,
+            song.score.map(String.init) ?? "",
+            song.artist ?? "",
+            song.title ?? "",
             song.album ?? "",
             song.songLink ?? "",
         ]))
@@ -359,7 +359,7 @@ struct StreamToCsvApp {
                         }
                     }
                     FileHandle.standardError.write(Data(
-                        "[match] \(match.song.artist) — \(match.song.title) (score=\(match.song.score))\n".utf8
+                        "[match] \(match.song?.artist ?? "?") — \(match.song?.title ?? "?") (score=\(match.song?.score ?? 0))\n".utf8
                     ))
                 }
             }
@@ -367,7 +367,7 @@ struct StreamToCsvApp {
                 for await notif in poll.notifications {
                     if sigintFlag.isFired { break }
                     FileHandle.standardError.write(Data(
-                        "[notification] \(notif.notificationMessage)\n".utf8
+                        "[notification] \(notif.notificationMessage ?? "")\n".utf8
                     ))
                 }
             }

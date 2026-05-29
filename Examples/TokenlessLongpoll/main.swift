@@ -27,12 +27,12 @@ struct TokenlessLongpollExample {
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
                 for await match in poll.matches {
-                    print("match: \(match.song.artist) — \(match.song.title)")
+                    print("match: \(match.song?.artist ?? "?") — \(match.song?.title ?? "?")")
                 }
             }
             group.addTask {
                 for await notif in poll.notifications {
-                    print("notification: \(notif.notificationMessage)")
+                    print("notification: \(notif.notificationMessage ?? "")")
                 }
             }
             group.addTask {

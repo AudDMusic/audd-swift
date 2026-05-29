@@ -41,15 +41,15 @@ struct StreamsLongpollExample {
             await withTaskGroup(of: Void.self) { group in
                 group.addTask {
                     for await m in poll.matches {
-                        print("match: \(m.song.artist) — \(m.song.title)")
+                        print("match: \(m.song?.artist ?? "?") — \(m.song?.title ?? "?")")
                         for alt in m.alternatives {
-                            print("  alt: \(alt.artist) — \(alt.title)")
+                            print("  alt: \(alt.artist ?? "?") — \(alt.title ?? "?")")
                         }
                     }
                 }
                 group.addTask {
                     for await n in poll.notifications {
-                        print("notification: \(n.notificationMessage)")
+                        print("notification: \(n.notificationMessage ?? "")")
                     }
                 }
                 group.addTask {

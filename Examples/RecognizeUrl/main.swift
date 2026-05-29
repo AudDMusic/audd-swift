@@ -18,7 +18,7 @@ struct RecognizeUrlExample {
             }
             let result = try await audd.recognize("https://audd.tech/example.mp3")
             if let result {
-                print("Match: \(result.artist ?? "?") — \(result.title ?? "?") (timecode \(result.timecode))")
+                print("Match: \(result.artist ?? "?") — \(result.title ?? "?") (timecode \(result.timecode ?? "?"))")
                 if let link = result.songLink {
                     print("Song link: \(link)")
                 }

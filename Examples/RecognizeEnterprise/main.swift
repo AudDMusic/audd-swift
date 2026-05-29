@@ -38,7 +38,7 @@ struct RecognizeEnterpriseExample {
                 return
             }
             for (i, m) in matches.enumerated() {
-                print("[\(i)] \(m.artist ?? "?") — \(m.title ?? "?") (score \(m.score), timecode \(m.timecode))")
+                print("[\(i)] \(m.artist ?? "?") — \(m.title ?? "?") (score \(m.score ?? 0), timecode \(m.timecode ?? "?"))")
                 if let isrc = m.isrc { print("    ISRC: \(isrc)") }
                 if let upc = m.upc { print("    UPC: \(upc)") }
             }

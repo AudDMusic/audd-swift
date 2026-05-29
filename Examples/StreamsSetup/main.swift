@@ -36,7 +36,7 @@ struct StreamsSetupExample {
             // List to verify.
             let list = try await streams.list()
             for s in list {
-                print("radio \(s.radioID)  running=\(s.streamRunning)  category=\(s.longpollCategory ?? "(none)")")
+                print("radio \(s.radioID.map(String.init) ?? "?")  running=\(s.streamRunning ?? false)  category=\(s.longpollCategory ?? "(none)")")
             }
         } catch {
             print("Error: \(error)")
