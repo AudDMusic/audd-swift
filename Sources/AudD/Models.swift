@@ -47,6 +47,35 @@ func decodeExtras<K: CodingKey & CaseIterable & RawRepresentable>(
     return extras
 }
 
+/// Decode an array defensively: a missing key, a `null`, or a non-array value
+/// all yield `[]`; individual elements that fail to decode are skipped rather
+/// than aborting the whole array. A successful API response must never throw
+/// because one element of a list is malformed.
+func decodeArrayIfPresent<T: Decodable, K: CodingKey>(
+    _ type: T.Type,
+    forKey key: K,
+    in container: KeyedDecodingContainer<K>
+) -> [T] {
+    guard var unkeyed = try? container.nestedUnkeyedContainer(forKey: key) else {
+        return []
+    }
+    var out: [T] = []
+    while !unkeyed.isAtEnd {
+        let indexBefore = unkeyed.currentIndex
+        // Decode each element; on failure, advance past it (decode as a throwaway
+        // AnyCodable so the cursor moves) and skip rather than abort.
+        if let element = try? unkeyed.decode(T.self) {
+            out.append(element)
+        } else {
+            _ = try? unkeyed.decode(AnyCodable.self)
+        }
+        // Guard against a non-advancing cursor (a malformed element that neither
+        // decoder consumed) — bail rather than spin forever.
+        if unkeyed.currentIndex == indexBefore { break }
+    }
+    return out
+}
+
 /// Decode all top-level keys as a single AnyCodable map (the rawResponse).
 func decodeRawResponse(from decoder: Decoder) throws -> AnyCodable {
     let container = try decoder.container(keyedBy: DynamicCodingKey.self)
@@ -171,7 +200,7 @@ public struct NapsterMetadata: Sendable, Equatable, Decodable {
 }
 
 public struct MusicBrainzEntry: Sendable, Equatable, Decodable {
-    public let id: String
+    public let id: String?
     public let score: Int?
     public let title: String?
     public let length: Int?
@@ -183,7 +212,7 @@ public struct MusicBrainzEntry: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try c.decode(String.self, forKey: .id)
+        self.id = try c.decodeIfPresent(String.self, forKey: .id)
         // server may send int or string for score
         if let intScore = try? c.decode(Int.self, forKey: .score) {
             self.score = intScore
@@ -201,7 +230,7 @@ public struct MusicBrainzEntry: Sendable, Equatable, Decodable {
 // MARK: - RecognitionResult
 
 public struct RecognitionResult: Sendable, Equatable, Decodable {
-    public let timecode: String
+    public let timecode: String?
     public let audioID: Int?
     public let artist: String?
     public let title: String?
@@ -233,7 +262,7 @@ public struct RecognitionResult: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.timecode = try c.decode(String.self, forKey: .timecode)
+        self.timecode = try c.decodeIfPresent(String.self, forKey: .timecode)
         self.audioID = try c.decodeIfPresent(Int.self, forKey: .audioID)
         self.artist = try c.decodeIfPresent(String.self, forKey: .artist)
         self.title = try c.decodeIfPresent(String.self, forKey: .title)
@@ -243,11 +272,13 @@ public struct RecognitionResult: Sendable, Equatable, Decodable {
         self.songLink = try c.decodeIfPresent(String.self, forKey: .songLink)
         self.isrc = try c.decodeIfPresent(String.self, forKey: .isrc)
         self.upc = try c.decodeIfPresent(String.self, forKey: .upc)
-        self.appleMusic = try c.decodeIfPresent(AppleMusicMetadata.self, forKey: .appleMusic)
-        self.spotify = try c.decodeIfPresent(SpotifyMetadata.self, forKey: .spotify)
-        self.deezer = try c.decodeIfPresent(DeezerMetadata.self, forKey: .deezer)
-        self.napster = try c.decodeIfPresent(NapsterMetadata.self, forKey: .napster)
-        self.musicbrainz = try c.decodeIfPresent([MusicBrainzEntry].self, forKey: .musicbrainz)
+        self.appleMusic = try? c.decodeIfPresent(AppleMusicMetadata.self, forKey: .appleMusic)
+        self.spotify = try? c.decodeIfPresent(SpotifyMetadata.self, forKey: .spotify)
+        self.deezer = try? c.decodeIfPresent(DeezerMetadata.self, forKey: .deezer)
+        self.napster = try? c.decodeIfPresent(NapsterMetadata.self, forKey: .napster)
+        self.musicbrainz = c.contains(.musicbrainz)
+            ? decodeArrayIfPresent(MusicBrainzEntry.self, forKey: .musicbrainz, in: c)
+            : nil
         self.extras = try decodeExtras(from: decoder, knownKeys: CodingKeys.self)
         self.rawResponse = try decodeRawResponse(from: decoder)
     }
@@ -375,8 +406,8 @@ public struct RecognitionResult: Sendable, Equatable, Decodable {
 // MARK: - Enterprise
 
 public struct EnterpriseMatch: Sendable, Equatable, Decodable {
-    public let score: Int
-    public let timecode: String
+    public let score: Int?
+    public let timecode: String?
     public let artist: String?
     public let title: String?
     public let album: String?
@@ -401,8 +432,8 @@ public struct EnterpriseMatch: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.score = try c.decode(Int.self, forKey: .score)
-        self.timecode = try c.decode(String.self, forKey: .timecode)
+        self.score = try c.decodeIfPresent(Int.self, forKey: .score)
+        self.timecode = try c.decodeIfPresent(String.self, forKey: .timecode)
         self.artist = try c.decodeIfPresent(String.self, forKey: .artist)
         self.title = try c.decodeIfPresent(String.self, forKey: .title)
         self.album = try c.decodeIfPresent(String.self, forKey: .album)
@@ -447,19 +478,25 @@ public struct EnterpriseMatch: Sendable, Equatable, Decodable {
 
 struct EnterpriseChunkResult: Decodable {
     let songs: [EnterpriseMatch]
-    let offset: String
+    let offset: String?
 
     enum CodingKeys: String, CodingKey {
         case songs, offset
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.songs = decodeArrayIfPresent(EnterpriseMatch.self, forKey: .songs, in: c)
+        self.offset = try c.decodeIfPresent(String.self, forKey: .offset)
     }
 }
 
 // MARK: - Streams
 
 public struct Stream: Sendable, Equatable, Decodable {
-    public let radioID: Int
-    public let url: String
-    public let streamRunning: Bool
+    public let radioID: Int?
+    public let url: String?
+    public let streamRunning: Bool?
     public let longpollCategory: String?
     public let extras: [String: AnyCodable]
     public let rawResponse: AnyCodable
@@ -473,9 +510,9 @@ public struct Stream: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.radioID = try c.decode(Int.self, forKey: .radioID)
-        self.url = try c.decode(String.self, forKey: .url)
-        self.streamRunning = try c.decode(Bool.self, forKey: .streamRunning)
+        self.radioID = try c.decodeIfPresent(Int.self, forKey: .radioID)
+        self.url = try c.decodeIfPresent(String.self, forKey: .url)
+        self.streamRunning = try c.decodeIfPresent(Bool.self, forKey: .streamRunning)
         self.longpollCategory = try c.decodeIfPresent(String.self, forKey: .longpollCategory)
         self.extras = try decodeExtras(from: decoder, knownKeys: CodingKeys.self)
         self.rawResponse = try decodeRawResponse(from: decoder)
@@ -486,9 +523,9 @@ public struct Stream: Sendable, Equatable, Decodable {
 /// every match has exactly one song; multiple candidates only appear when the
 /// same fingerprint resolves to several near-identical catalog records.
 public struct StreamCallbackSong: Sendable, Equatable, Decodable {
-    public let score: Int
-    public let artist: String
-    public let title: String
+    public let score: Int?
+    public let artist: String?
+    public let title: String?
     public let album: String?
     public let releaseDate: String?
     public let label: String?
@@ -514,20 +551,22 @@ public struct StreamCallbackSong: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.score = try c.decode(Int.self, forKey: .score)
-        self.artist = try c.decode(String.self, forKey: .artist)
-        self.title = try c.decode(String.self, forKey: .title)
+        self.score = try c.decodeIfPresent(Int.self, forKey: .score)
+        self.artist = try c.decodeIfPresent(String.self, forKey: .artist)
+        self.title = try c.decodeIfPresent(String.self, forKey: .title)
         self.album = try c.decodeIfPresent(String.self, forKey: .album)
         self.releaseDate = try c.decodeIfPresent(String.self, forKey: .releaseDate)
         self.label = try c.decodeIfPresent(String.self, forKey: .label)
         self.songLink = try c.decodeIfPresent(String.self, forKey: .songLink)
         self.isrc = try c.decodeIfPresent(String.self, forKey: .isrc)
         self.upc = try c.decodeIfPresent(String.self, forKey: .upc)
-        self.appleMusic = try c.decodeIfPresent(AppleMusicMetadata.self, forKey: .appleMusic)
-        self.spotify = try c.decodeIfPresent(SpotifyMetadata.self, forKey: .spotify)
-        self.deezer = try c.decodeIfPresent(DeezerMetadata.self, forKey: .deezer)
-        self.napster = try c.decodeIfPresent(NapsterMetadata.self, forKey: .napster)
-        self.musicbrainz = try c.decodeIfPresent([MusicBrainzEntry].self, forKey: .musicbrainz)
+        self.appleMusic = try? c.decodeIfPresent(AppleMusicMetadata.self, forKey: .appleMusic)
+        self.spotify = try? c.decodeIfPresent(SpotifyMetadata.self, forKey: .spotify)
+        self.deezer = try? c.decodeIfPresent(DeezerMetadata.self, forKey: .deezer)
+        self.napster = try? c.decodeIfPresent(NapsterMetadata.self, forKey: .napster)
+        self.musicbrainz = c.contains(.musicbrainz)
+            ? decodeArrayIfPresent(MusicBrainzEntry.self, forKey: .musicbrainz, in: c)
+            : nil
         self.extras = try decodeExtras(from: decoder, knownKeys: CodingKeys.self)
     }
 }
@@ -540,13 +579,13 @@ public struct StreamCallbackSong: Sendable, Equatable, Decodable {
 /// releases (e.g. "single" vs "album" recordings, regional re-releases,
 /// near-duplicate fingerprints across labels).
 public struct StreamCallbackMatch: Sendable, Equatable, Decodable {
-    public let radioID: Int
+    public let radioID: Int?
     public let timestamp: String?
     public let playLength: Int?
 
-    /// The top match. Always set when a `StreamCallbackMatch` is constructed —
-    /// the parser raises rather than producing a match with no songs.
-    public let song: StreamCallbackSong
+    /// The top match. `nil` when the callback carries an empty `results` array —
+    /// parsing never throws on a missing/empty match.
+    public let song: StreamCallbackSong?
 
     /// Additional candidate songs. Empty in the common case. Entries may have
     /// a different `artist`/`title` than ``song`` (variant catalog releases).
@@ -564,18 +603,11 @@ public struct StreamCallbackMatch: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.radioID = try c.decode(Int.self, forKey: .radioID)
+        self.radioID = try c.decodeIfPresent(Int.self, forKey: .radioID)
         self.timestamp = try c.decodeIfPresent(String.self, forKey: .timestamp)
         self.playLength = try c.decodeIfPresent(Int.self, forKey: .playLength)
-        let results = try c.decode([StreamCallbackSong].self, forKey: .results)
-        guard let first = results.first else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .results,
-                in: c,
-                debugDescription: "callback result.results is empty"
-            )
-        }
-        self.song = first
+        let results = decodeArrayIfPresent(StreamCallbackSong.self, forKey: .results, in: c)
+        self.song = results.first
         self.alternatives = Array(results.dropFirst())
         self.extras = try decodeExtras(from: decoder, knownKeys: CodingKeys.self)
         self.rawResponse = nil
@@ -584,10 +616,10 @@ public struct StreamCallbackMatch: Sendable, Equatable, Decodable {
     /// Internal initializer used by ``parseCallback(_:)`` to attach the raw
     /// outer-callback bytes (which include the wrapping `{"result": ...}`).
     init(
-        radioID: Int,
+        radioID: Int?,
         timestamp: String?,
         playLength: Int?,
-        song: StreamCallbackSong,
+        song: StreamCallbackSong?,
         alternatives: [StreamCallbackSong],
         extras: [String: AnyCodable],
         rawResponse: AnyCodable?
@@ -605,10 +637,10 @@ public struct StreamCallbackMatch: Sendable, Equatable, Decodable {
 /// The lifecycle-event variant of a stream callback (e.g. "stream stopped",
 /// "can't connect"). Distinct from a recognition match.
 public struct StreamCallbackNotification: Sendable, Equatable, Decodable {
-    public let radioID: Int
+    public let radioID: Int?
     public let streamRunning: Bool?
-    public let notificationCode: Int
-    public let notificationMessage: String
+    public let notificationCode: Int?
+    public let notificationMessage: String?
 
     /// Outer `time` field on the callback envelope. Server-supplied unix
     /// timestamp; absent on inner-only fixtures or some longpoll envelopes.
@@ -626,10 +658,10 @@ public struct StreamCallbackNotification: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.radioID = try c.decode(Int.self, forKey: .radioID)
+        self.radioID = try c.decodeIfPresent(Int.self, forKey: .radioID)
         self.streamRunning = try c.decodeIfPresent(Bool.self, forKey: .streamRunning)
-        self.notificationCode = try c.decode(Int.self, forKey: .notificationCode)
-        self.notificationMessage = try c.decode(String.self, forKey: .notificationMessage)
+        self.notificationCode = try c.decodeIfPresent(Int.self, forKey: .notificationCode)
+        self.notificationMessage = try c.decodeIfPresent(String.self, forKey: .notificationMessage)
         self.extras = try decodeExtras(from: decoder, knownKeys: CodingKeys.self)
         self.time = nil
         self.rawResponse = nil
@@ -638,10 +670,10 @@ public struct StreamCallbackNotification: Sendable, Equatable, Decodable {
     /// Internal initializer used by ``parseCallback(_:)`` to attach the outer
     /// `time` field and the raw outer-callback bytes.
     init(
-        radioID: Int,
+        radioID: Int?,
         streamRunning: Bool?,
-        notificationCode: Int,
-        notificationMessage: String,
+        notificationCode: Int?,
+        notificationMessage: String?,
         time: Int?,
         extras: [String: AnyCodable],
         rawResponse: AnyCodable?
@@ -666,8 +698,8 @@ public enum CallbackEvent: Sendable, Equatable {
 // MARK: - Lyrics
 
 public struct LyricsResult: Sendable, Equatable, Decodable {
-    public let artist: String
-    public let title: String
+    public let artist: String?
+    public let title: String?
     public let lyrics: String?
     public let songID: Int?
     public let media: String?
@@ -688,8 +720,8 @@ public struct LyricsResult: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.artist = try c.decode(String.self, forKey: .artist)
-        self.title = try c.decode(String.self, forKey: .title)
+        self.artist = try c.decodeIfPresent(String.self, forKey: .artist)
+        self.title = try c.decodeIfPresent(String.self, forKey: .title)
         self.lyrics = try c.decodeIfPresent(String.self, forKey: .lyrics)
         self.songID = try c.decodeIfPresent(Int.self, forKey: .songID)
         self.media = try c.decodeIfPresent(String.self, forKey: .media)

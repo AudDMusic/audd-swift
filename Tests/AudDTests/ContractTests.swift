@@ -59,6 +59,39 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(match.upc, "00602547037169")
     }
 
+    /// An enterprise response whose song omits `score` (and `isrc`/`upc`/`label`)
+    /// must decode without throwing — those fields are not structurally
+    /// guaranteed on the enterprise endpoint. Regression for the
+    /// `keyNotFound`/`typeMismatch`-on-success bug.
+    func testEnterpriseSongMissingScoreDoesNotThrow() throws {
+        let body: [String: Any] = [
+            "status": "success",
+            "result": [
+                [
+                    "songs": [
+                        [
+                            "artist": "Some Artist",
+                            "title": "Some Title",
+                            "timecode": "00:00",
+                            "song_link": "https://lis.tn/abc",
+                        ],
+                    ],
+                    "offset": "0",
+                ],
+            ],
+        ]
+        let chunks = body["result"] as! [[String: Any]]
+        let chunk = try decode(EnterpriseChunkResult.self, from: chunks[0])
+        XCTAssertEqual(chunk.songs.count, 1)
+        let match = chunk.songs[0]
+        XCTAssertNil(match.score)
+        XCTAssertNil(match.isrc)
+        XCTAssertNil(match.upc)
+        XCTAssertNil(match.label)
+        XCTAssertEqual(match.artist, "Some Artist")
+        XCTAssertEqual(match.title, "Some Title")
+    }
+
     func testStreamsCallbackResultParse() throws {
         let data = try fixtureData("streams_callback_with_result.json")
         let parsed = try Audd_parseCallback(data)
@@ -66,8 +99,8 @@ final class ContractTests: XCTestCase {
             XCTFail("expected .match, got \(parsed)"); return
         }
         XCTAssertEqual(match.radioID, 7)
-        XCTAssertEqual(match.song.artist, "Alan Walker, A$AP Rocky")
-        XCTAssertEqual(match.song.title, "Live Fast (PUBGM)")
+        XCTAssertEqual(match.song?.artist, "Alan Walker, A$AP Rocky")
+        XCTAssertEqual(match.song?.title, "Live Fast (PUBGM)")
         XCTAssertEqual(match.alternatives.count, 0)
     }
 

@@ -124,7 +124,7 @@ final class StreamsTests: XCTestCase {
         guard case .match(let match) = parsed else {
             XCTFail("expected .match"); return
         }
-        XCTAssertEqual(match.song.artist, "Alan Walker, A$AP Rocky")
+        XCTAssertEqual(match.song?.artist, "Alan Walker, A$AP Rocky")
     }
 
     func testParseCallbackAlternativesSplit() throws {
@@ -146,16 +146,24 @@ final class StreamsTests: XCTestCase {
         guard case .match(let match) = parsed else {
             XCTFail("expected .match"); return
         }
-        XCTAssertEqual(match.song.artist, "A")
+        XCTAssertEqual(match.song?.artist, "A")
         XCTAssertEqual(match.alternatives.count, 1)
         XCTAssertEqual(match.alternatives[0].artist, "B")
         XCTAssertEqual(match.alternatives[0].title, "T2")
     }
 
-    func testParseCallbackEmptyResultsThrows() throws {
+    func testParseCallbackEmptyResultsYieldsMatchWithNilSong() throws {
+        // An empty `results` array must NOT throw: a successful callback parses
+        // into a match with `song == nil` and no alternatives.
         let body: [String: Any] = ["result": ["radio_id": 1, "results": []]]
         let data = try JSONSerialization.data(withJSONObject: body)
-        XCTAssertThrowsError(try Audd_parseCallback(data))
+        let parsed = try Audd_parseCallback(data)
+        guard case .match(let match) = parsed else {
+            XCTFail("expected .match, got \(parsed)"); return
+        }
+        XCTAssertNil(match.song)
+        XCTAssertTrue(match.alternatives.isEmpty)
+        XCTAssertEqual(match.radioID, 1)
     }
 
     func testParseCallbackNeitherKeyThrows() throws {

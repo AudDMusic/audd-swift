@@ -112,8 +112,8 @@ final class LongpollConsumerTests: XCTestCase {
         guard let match = await iterator.next() else {
             XCTFail("no match received"); return
         }
-        XCTAssertEqual(match.song.artist, "Alan Walker, A$AP Rocky")
-        XCTAssertEqual(match.song.title, "Live Fast (PUBGM)")
+        XCTAssertEqual(match.song?.artist, "Alan Walker, A$AP Rocky")
+        XCTAssertEqual(match.song?.title, "Live Fast (PUBGM)")
 
         await poll.close()
         consumer.close()

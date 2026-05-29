@@ -225,7 +225,7 @@ public struct Streams: Sendable {
 /// let poll = try await audd.streams.longpoll(category: cat)
 /// defer { Task { await poll.close() } }
 /// for await match in poll.matches {
-///     print("\(match.song.artist) — \(match.song.title)")
+///     print("\(match.song?.artist ?? "?") — \(match.song?.title ?? "?")")
 /// }
 /// ```
 public actor LongpollPoll {
