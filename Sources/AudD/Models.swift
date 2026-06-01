@@ -418,9 +418,23 @@ public struct EnterpriseMatch: Sendable, Equatable, Decodable {
     public let songLink: String?
     public let startOffset: Int?
     public let endOffset: Int?
+
+    /// Where this song plays in the user's file, in seconds. Computed by
+    /// anchoring the fragment-relative ``startOffset`` to the chunk's position
+    /// in the file. `nil` when the chunk offset is absent or unparseable.
+    public var startSeconds: Double?
+
+    /// Where this song stops playing in the user's file, in seconds. Computed
+    /// by anchoring the fragment-relative ``endOffset`` to the chunk's position
+    /// in the file. `nil` when the chunk offset is absent or unparseable.
+    public var endSeconds: Double?
+
     public let extras: [String: AnyCodable]
     public let rawResponse: AnyCodable
 
+    // `startSeconds`/`endSeconds` are computed locally from the enclosing
+    // chunk's `offset` after decoding — they are deliberately excluded from
+    // `CodingKeys` so decoding never expects them on the wire.
     enum CodingKeys: String, CodingKey, CaseIterable {
         case score, timecode, artist, title, album
         case releaseDate = "release_date"
@@ -444,6 +458,8 @@ public struct EnterpriseMatch: Sendable, Equatable, Decodable {
         self.songLink = try c.decodeIfPresent(String.self, forKey: .songLink)
         self.startOffset = try c.decodeIfPresent(Int.self, forKey: .startOffset)
         self.endOffset = try c.decodeIfPresent(Int.self, forKey: .endOffset)
+        self.startSeconds = nil
+        self.endSeconds = nil
         self.extras = try decodeExtras(from: decoder, knownKeys: CodingKeys.self)
         self.rawResponse = try decodeRawResponse(from: decoder)
     }
@@ -473,6 +489,28 @@ public struct EnterpriseMatch: Sendable, Equatable, Decodable {
             }
         }
         return out
+    }
+}
+
+/// Parse a chunk `offset` into seconds. Accepts `"SS"`, `"MM:SS"`,
+/// `"HH:MM:SS"`, or a bare number (string or already-numeric). Returns `nil`
+/// for `nil`/empty/unparseable input — never throws.
+func offsetToSeconds(_ offset: String?) -> Double? {
+    guard let offset, !offset.isEmpty else { return nil }
+    let trimmed = offset.trimmingCharacters(in: .whitespaces)
+    if trimmed.isEmpty { return nil }
+    let parts = trimmed.split(separator: ":", omittingEmptySubsequences: false)
+    switch parts.count {
+    case 1:
+        return Double(parts[0])
+    case 2:
+        guard let m = Double(parts[0]), let s = Double(parts[1]) else { return nil }
+        return m * 60 + s
+    case 3:
+        guard let h = Double(parts[0]), let m = Double(parts[1]), let s = Double(parts[2]) else { return nil }
+        return h * 3600 + m * 60 + s
+    default:
+        return nil
     }
 }
 

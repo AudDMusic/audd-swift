@@ -321,7 +321,13 @@ public actor AudD {
     /// Recognize music on the enterprise endpoint (large-file / chunk-based).
     /// Returns an empty array when no matches are found.
     ///
+    /// Each match carries ``EnterpriseMatch/startSeconds`` /
+    /// ``EnterpriseMatch/endSeconds`` — where the song plays in the file, in
+    /// seconds, precise because accurate offsets are requested by default.
+    ///
     /// - Parameters:
+    ///   - accurateOffsets: request precise per-fragment offsets. Defaults to
+    ///     `true`; pass `false` to opt out.
     ///   - extraParameters: additional form fields the typed params don't cover.
     ///     Typed params win on collision.
     public func recognizeEnterprise(
@@ -391,7 +397,18 @@ public actor AudD {
             var matches: [EnterpriseMatch] = []
             for chunk in chunks {
                 let chunkResult = try decode(EnterpriseChunkResult.self, from: chunk)
-                matches.append(contentsOf: chunkResult.songs)
+                // The chunk `offset` is the fragment's position in the user's
+                // file. Anchor each song's fragment-relative ms offsets to it so
+                // callers get an absolute position in seconds. `nil` base ⇒ leave
+                // the per-song seconds nil.
+                let base = offsetToSeconds(chunkResult.offset)
+                for var song in chunkResult.songs {
+                    if let base {
+                        song.startSeconds = base + Double(song.startOffset ?? 0) / 1000
+                        song.endSeconds = base + Double(song.endOffset ?? 0) / 1000
+                    }
+                    matches.append(song)
+                }
             }
             return matches
         } catch let AudDError.api(detail) {
@@ -458,7 +475,10 @@ func enterpriseFields(
     if let limit { fields["limit"] = String(limit) }
     if let skipFirstSeconds { fields["skip_first_seconds"] = String(skipFirstSeconds) }
     if let useTimecode { fields["use_timecode"] = useTimecode ? "true" : "false" }
-    if let accurateOffsets { fields["accurate_offsets"] = accurateOffsets ? "true" : "false" }
+    // Accurate offsets default on: send `accurate_offsets=true` unless the
+    // caller explicitly opts out with `false`, so `startSeconds`/`endSeconds`
+    // are precise out of the box.
+    fields["accurate_offsets"] = (accurateOffsets ?? true) ? "true" : "false"
     return fields
 }
 

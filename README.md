@@ -116,8 +116,12 @@ Valid `returnMetadata` values: `apple_music`, `spotify`, `deezer`, `napster`,
 `nil` when not requested.
 
 `EnterpriseMatch` (returned by `recognizeEnterprise`) carries the same core
-tags plus `score`, `startOffset`, `endOffset`, `isrc`, `upc`. Access to
-`isrc`, `upc`, and `score` requires a Startup plan or higher — [contact
+tags plus `score`, `isrc`, `upc`, and `startSeconds` / `endSeconds` — where the
+song plays in your file, in seconds. These are precise because
+`recognizeEnterprise` requests accurate offsets by default (pass
+`accurateOffsets: false` to opt out). The raw fragment-relative `startOffset` /
+`endOffset` (milliseconds within the matched fragment) sit behind them. Access
+to `isrc`, `upc`, and `score` requires a Startup plan or higher — [contact
 us](mailto:api@audd.io) for enterprise features.
 
 ## Reading additional metadata

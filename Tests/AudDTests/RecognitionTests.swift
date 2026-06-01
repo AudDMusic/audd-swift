@@ -163,6 +163,77 @@ final class RecognitionTests: XCTestCase {
         XCTAssertEqual(result?.artist, "X")
         await audd.close()
     }
+
+    // MARK: - Enterprise accurate offsets
+
+    /// The chunk `offset` anchors each song's fragment-relative offsets to its
+    /// position in the user's file. Chunk "00:01:00" + startOffset 4200ms ⇒
+    /// 64.2s; + endOffset 11800ms ⇒ 71.8s. A chunk with no offset ⇒ nil.
+    func testEnterpriseStartEndSecondsFromChunkOffset() async throws {
+        let session = mockSession()
+        let body: [String: Any] = [
+            "status": "success",
+            "result": [
+                [
+                    "offset": "00:01:00",
+                    "songs": [
+                        [
+                            "artist": "A", "title": "T",
+                            "start_offset": 4200, "end_offset": 11800,
+                        ],
+                    ],
+                ],
+                [
+                    // No offset on this chunk → seconds remain nil.
+                    "songs": [
+                        [
+                            "artist": "B", "title": "U",
+                            "start_offset": 1000, "end_offset": 2000,
+                        ],
+                    ],
+                ],
+            ],
+        ]
+        let payload = try JSONSerialization.data(withJSONObject: body)
+        MockURLProtocol.register { request in
+            (makeJSONResponse(request.url!, body: payload), payload)
+        }
+        let audd = try AudD(apiToken: "test", urlSession: session)
+        let matches = try await audd.recognizeEnterprise(.url(URL(string: "https://audd.tech/example.mp3")!))
+        XCTAssertEqual(matches.count, 2)
+        XCTAssertEqual(matches[0].startSeconds ?? -1, 64.2, accuracy: 0.0001)
+        XCTAssertEqual(matches[0].endSeconds ?? -1, 71.8, accuracy: 0.0001)
+        XCTAssertNil(matches[1].startSeconds)
+        XCTAssertNil(matches[1].endSeconds)
+        await audd.close()
+    }
+
+    /// A default `recognizeEnterprise` call sends `accurate_offsets=true`.
+    func testEnterpriseDefaultsAccurateOffsetsOn() async throws {
+        let session = mockSession()
+        let payload = "{\"status\":\"success\",\"result\":[]}".data(using: .utf8)!
+        MockURLProtocol.register { request in
+            (makeJSONResponse(request.url!, body: payload), payload)
+        }
+        let audd = try AudD(apiToken: "test", urlSession: session)
+        _ = try await audd.recognizeEnterprise(.url(URL(string: "https://audd.tech/example.mp3")!))
+        let enterpriseRequest = MockURLProtocol.requestLog.first {
+            $0.url?.host == "enterprise.audd.io"
+        }
+        let req = try XCTUnwrap(enterpriseRequest, "expected an enterprise request")
+        let bodyData = try XCTUnwrap(MockURLProtocol.bodyData(for: req))
+        let bodyString = String(decoding: bodyData, as: UTF8.self)
+        XCTAssertTrue(
+            bodyString.contains("accurate_offsets"),
+            "request body should carry accurate_offsets"
+        )
+        // The value next to the field name must be true.
+        if let range = bodyString.range(of: "name=\"accurate_offsets\"") {
+            let after = bodyString[range.upperBound...]
+            XCTAssertTrue(after.contains("true"), "accurate_offsets should be true")
+        }
+        await audd.close()
+    }
 }
 
 func fixtureData(_ name: String) throws -> Data {
