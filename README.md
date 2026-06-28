@@ -1,5 +1,6 @@
 # audd-swift
 
+[![Powered by AudD](https://img.shields.io/badge/Music_Recognition-AudD_API-2a4eef)](https://audd.io)
 [![CI](https://github.com/AudDMusic/audd-swift/actions/workflows/ci.yml/badge.svg)](https://github.com/AudDMusic/audd-swift/actions/workflows/ci.yml)
 [![Contract](https://github.com/AudDMusic/audd-swift/actions/workflows/contract.yml/badge.svg)](https://github.com/AudDMusic/audd-swift/actions/workflows/contract.yml)
 [![Swift Version Compatibility](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2FAudDMusic%2Faudd-swift%2Fbadge%3Ftype%3Dswift-versions)](https://swiftpackageindex.com/AudDMusic/audd-swift)
