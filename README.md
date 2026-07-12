@@ -17,7 +17,7 @@ The API itself is so simple that it can easily be used even without an SDK: [doc
 `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/AudDMusic/audd-swift", from: "1.5.17"),
+.package(url: "https://github.com/AudDMusic/audd-swift", from: "1.5.18"),
 ```
 
 Get your API token at [dashboard.audd.io](https://dashboard.audd.io).

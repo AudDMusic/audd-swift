@@ -30,16 +30,143 @@ func lisTnStreamingURL(songLink: String?, provider: String) -> String? {
 
 // MARK: - Helpers for forward-compat decoding
 
-/// Decode a scalar field leniently: a missing key, a `null`, or a value of the
-/// wrong type all yield `nil` rather than throwing. A successful API response
-/// must never fail to parse because one scalar arrived with an unexpected type
-/// (e.g. `{"artist": 123}`) — the field simply degrades to `nil`.
+/// Decode a scalar field leniently. A missing key or a `null` yields `nil`. For
+/// non-scalar target types a value of the wrong type also yields `nil` — a
+/// successful API response must never fail to parse because one field arrived
+/// with an unexpected shape.
+///
+/// The concrete overloads below (`String`, `Int`, `Double`, `Bool`) additionally
+/// *coerce* a convertible wrong-typed scalar to the expected type (e.g.
+/// `{"score": "85"}` → `85`, `{"artist": 123}` → `"123"`), degrading to `nil`
+/// only when the value cannot be converted (e.g. `{"score": "abc"}` → `nil`) or
+/// arrived as a non-scalar container (object/array).
 func decodeLenient<T: Decodable, K: CodingKey>(
     _ type: T.Type,
     forKey key: K,
     in container: KeyedDecodingContainer<K>
 ) -> T? {
     return (try? container.decodeIfPresent(T.self, forKey: key)) ?? nil
+}
+
+// MARK: Scalar coercion overloads (family coercion policy)
+
+/// The concrete JSON scalar that actually arrived for a key, used by the
+/// coercion overloads to convert across scalar types. Objects and arrays are
+/// deliberately *not* represented here — the coercion helpers treat them as
+/// unconvertible and return `nil`.
+private enum LenientScalar {
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+}
+
+/// Parse a numeric string to `Double` under the family policy: full-string
+/// strict after trimming, and non-finite spellings (`NaN`, `Infinity`, `inf`,
+/// …) are rejected even though `Double(_:)` would otherwise accept them.
+private func lenientDouble(from string: String) -> Double? {
+    let trimmed = string.trimmingCharacters(in: .whitespaces)
+    guard let value = Double(trimmed), value.isFinite else { return nil }
+    return value
+}
+
+/// Read the raw scalar present at `key`. Returns `nil` when the key is missing,
+/// `null`, or holds a non-scalar container. `Bool` is probed before the numeric
+/// types because Foundation's `JSONDecoder` will happily decode a JSON boolean
+/// as a number; probing numbers first would mis-render `true` as `1`.
+private func lenientScalar<K: CodingKey>(
+    forKey key: K,
+    in container: KeyedDecodingContainer<K>
+) -> LenientScalar? {
+    guard container.contains(key),
+          (try? container.decodeNil(forKey: key)) == false else { return nil }
+    if let b = try? container.decode(Bool.self, forKey: key) { return .bool(b) }
+    if let i = try? container.decode(Int.self, forKey: key) { return .int(i) }
+    if let d = try? container.decode(Double.self, forKey: key) { return .double(d) }
+    if let s = try? container.decode(String.self, forKey: key) { return .string(s) }
+    return nil
+}
+
+/// `String` target: numbers/bools are rendered the way JSON would show them
+/// (`85`, `8.5`, `true`); objects/arrays degrade to `nil`.
+func decodeLenient<K: CodingKey>(
+    _ type: String.Type,
+    forKey key: K,
+    in container: KeyedDecodingContainer<K>
+) -> String? {
+    if let direct = try? container.decodeIfPresent(String.self, forKey: key) {
+        return direct
+    }
+    switch lenientScalar(forKey: key, in: container) {
+    case .string(let s): return s
+    case .int(let i): return String(i)
+    case .double(let d): return String(d)
+    case .bool(let b): return b ? "true" : "false"
+    case nil: return nil
+    }
+}
+
+/// `Int` target: doubles truncate, numeric strings parse exactly, bools map to
+/// `0`/`1`; non-numeric strings and containers degrade to `nil`.
+func decodeLenient<K: CodingKey>(
+    _ type: Int.Type,
+    forKey key: K,
+    in container: KeyedDecodingContainer<K>
+) -> Int? {
+    if let direct = try? container.decodeIfPresent(Int.self, forKey: key) {
+        return direct
+    }
+    switch lenientScalar(forKey: key, in: container) {
+    case .int(let i): return i
+    case .double(let d): return Int(d)
+    case .bool(let b): return b ? 1 : 0
+    case .string(let s): return Int(s.trimmingCharacters(in: .whitespaces))
+    case nil: return nil
+    }
+}
+
+/// `Double` target: ints convert, numeric strings parse; else `nil`.
+func decodeLenient<K: CodingKey>(
+    _ type: Double.Type,
+    forKey key: K,
+    in container: KeyedDecodingContainer<K>
+) -> Double? {
+    if let direct = try? container.decodeIfPresent(Double.self, forKey: key) {
+        return direct
+    }
+    switch lenientScalar(forKey: key, in: container) {
+    case .double(let d): return d
+    case .int(let i): return Double(i)
+    case .bool(let b): return b ? 1 : 0
+    case .string(let s): return lenientDouble(from: s)
+    case nil: return nil
+    }
+}
+
+/// `Bool` target: numbers map via `value != 0`; strings map by a strict
+/// whitelist (`true`/`1`/`yes`/`on` → `true`; `false`/`0`/`no`/`off`/`""` →
+/// `false`; any other string → `nil`); containers degrade to `nil`.
+func decodeLenient<K: CodingKey>(
+    _ type: Bool.Type,
+    forKey key: K,
+    in container: KeyedDecodingContainer<K>
+) -> Bool? {
+    if let direct = try? container.decodeIfPresent(Bool.self, forKey: key) {
+        return direct
+    }
+    switch lenientScalar(forKey: key, in: container) {
+    case .bool(let b): return b
+    case .int(let i): return i != 0
+    case .double(let d): return d != 0
+    case .string(let s):
+        let normalized = s.trimmingCharacters(in: .whitespaces).lowercased()
+        switch normalized {
+        case "true", "1", "yes", "on": return true
+        case "false", "0", "no", "off", "": return false
+        default: return nil
+        }
+    case nil: return nil
+    }
 }
 
 /// Decode known keys via the model's `CodingKeys`, capture everything else in

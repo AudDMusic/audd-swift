@@ -181,18 +181,19 @@ final class ContractTests: XCTestCase {
 
     // MARK: - Wrong-typed scalar fields must degrade to nil, never throw
 
-    /// A recognition response where `artist` arrives as a number (and `upc` as a
-    /// bool) must decode without throwing — every scalar degrades to `nil`
-    /// rather than aborting the whole parse. Well-typed neighbors still decode.
-    func testRecognizeWrongTypedScalarsDoNotThrow() throws {
+    /// A recognition response with wrong-typed scalars must decode without
+    /// throwing. Convertible values are coerced (`123` → `"123"`); a
+    /// non-numeric string for an `Int` field degrades to `nil`. Well-typed
+    /// neighbors still decode.
+    func testRecognizeWrongTypedScalarsCoerceOrDegrade() throws {
         let inner: [String: Any] = [
-            "artist": 123,          // number where String expected
+            "artist": 123,          // number where String expected → "123"
             "title": "Real Title",  // correct type — must survive
-            "audio_id": "not-a-number", // string where Int expected
+            "audio_id": "not-a-number", // non-numeric string where Int expected → nil
             "song_link": "https://lis.tn/abc",
         ]
         let result = try decode(RecognitionResult.self, from: inner)
-        XCTAssertNil(result.artist)
+        XCTAssertEqual(result.artist, "123")
         XCTAssertNil(result.audioID)
         XCTAssertEqual(result.title, "Real Title")
         XCTAssertEqual(result.songLink, "https://lis.tn/abc")
@@ -201,20 +202,22 @@ final class ContractTests: XCTestCase {
     }
 
     /// A provider metadata block whose scalar arrives with the wrong type must
-    /// still decode — the bad field degrades to `nil`, siblings survive.
-    func testProviderWrongTypedScalarDoesNotThrow() throws {
+    /// still decode: a convertible number coerces to `String` (`12345` →
+    /// `"12345"`), an unconvertible string for an `Int` field degrades to `nil`,
+    /// and siblings survive.
+    func testProviderWrongTypedScalarCoerceOrDegrade() throws {
         let inner: [String: Any] = [
             "artist": "Some Artist",
             "title": "Some Title",
             "spotify": [
-                "id": 12345,        // number where String expected
+                "id": 12345,        // number where String expected → "12345"
                 "name": "Track Name",
-                "duration_ms": "abc", // string where Int expected
+                "duration_ms": "abc", // non-numeric string where Int expected → nil
             ],
         ]
         let result = try decode(RecognitionResult.self, from: inner)
         XCTAssertNotNil(result.spotify)
-        XCTAssertNil(result.spotify?.id)
+        XCTAssertEqual(result.spotify?.id, "12345")
         XCTAssertNil(result.spotify?.durationMs)
         XCTAssertEqual(result.spotify?.name, "Track Name")
     }
@@ -262,7 +265,134 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(match.song?.artist, "Some Artist")
         XCTAssertEqual(match.song?.title, "Some Title")
     }
+
+    // MARK: - Scalar coercion (family coercion policy)
+
+    /// An enterprise match `score` (an `Int` field) that arrives as a numeric
+    /// string is parsed exactly; a fractional/wrong-typed neighbor coerces per
+    /// policy.
+    func testEnterpriseNumericStringScoreCoerces() throws {
+        let inner: [String: Any] = [
+            "songs": [
+                [
+                    "artist": "Some Artist",
+                    "title": "Some Title",
+                    "score": "85", // numeric string where Int expected → 85
+                ],
+            ],
+            "offset": "0",
+        ]
+        let chunk = try decode(EnterpriseChunkResult.self, from: inner)
+        XCTAssertEqual(chunk.songs[0].score, 85)
+    }
+
+    /// Direct, exhaustive coverage of the `decodeLenient` scalar-coercion
+    /// overloads, keyed by target type.
+    func testScalarCoercionMatrix() throws {
+        // expect Int -----------------------------------------------------
+        XCTAssertEqual(coerceInt(["v": "85"]), 85)          // numeric string
+        XCTAssertEqual(coerceInt(["v": " 85 "]), 85)        // trimmed
+        XCTAssertEqual(coerceInt(["v": 85.7]), 85)          // double truncates
+        XCTAssertEqual(coerceInt(["v": true]), 1)           // bool → 1
+        XCTAssertEqual(coerceInt(["v": false]), 0)          // bool → 0
+        XCTAssertNil(coerceInt(["v": "abc"]))               // non-numeric string
+        XCTAssertNil(coerceInt(["v": "85abc"]))             // partial numeric
+        XCTAssertNil(coerceInt(["v": ["x": 1]]))            // object
+        XCTAssertNil(coerceInt(["v": [1, 2]]))              // array
+        XCTAssertNil(coerceInt([:]))                        // missing
+
+        // expect String --------------------------------------------------
+        XCTAssertEqual(coerceString(["v": 123]), "123")     // int → "123" (no ".0")
+        XCTAssertEqual(coerceString(["v": 8.5]), "8.5")     // double → "8.5"
+        XCTAssertEqual(coerceString(["v": true]), "true")   // bool → "true"
+        XCTAssertEqual(coerceString(["v": false]), "false")
+        XCTAssertNil(coerceString(["v": ["x": 1]]))         // object → nil
+        XCTAssertNil(coerceString(["v": [1, 2]]))           // array → nil
+
+        // expect Double --------------------------------------------------
+        XCTAssertEqual(coerceDouble(["v": 42]), 42.0)       // int → double
+        XCTAssertEqual(coerceDouble(["v": "8.5"]), 8.5)     // numeric string
+        XCTAssertEqual(coerceDouble(["v": " 8.5 "]), 8.5)   // trimmed
+        XCTAssertNil(coerceDouble(["v": "abc"]))            // non-numeric
+        XCTAssertNil(coerceDouble(["v": "NaN"]))            // non-finite rejected
+        XCTAssertNil(coerceDouble(["v": "Infinity"]))       // non-finite rejected
+        XCTAssertNil(coerceDouble(["v": "inf"]))            // non-finite rejected
+        XCTAssertNil(coerceDouble(["v": ["x": 1]]))         // object → nil
+
+        // expect Bool ----------------------------------------------------
+        // number → (value != 0)
+        XCTAssertEqual(coerceBool(["v": 1]), true)
+        XCTAssertEqual(coerceBool(["v": 0]), false)
+        XCTAssertEqual(coerceBool(["v": 2]), true)
+        // string whitelist — true side
+        XCTAssertEqual(coerceBool(["v": "true"]), true)
+        XCTAssertEqual(coerceBool(["v": "TRUE"]), true)
+        XCTAssertEqual(coerceBool(["v": " 1 "]), true)
+        XCTAssertEqual(coerceBool(["v": "yes"]), true)
+        XCTAssertEqual(coerceBool(["v": "on"]), true)
+        // string whitelist — false side
+        XCTAssertEqual(coerceBool(["v": "false"]), false)
+        XCTAssertEqual(coerceBool(["v": "False"]), false)
+        XCTAssertEqual(coerceBool(["v": "0"]), false)
+        XCTAssertEqual(coerceBool(["v": "no"]), false)
+        XCTAssertEqual(coerceBool(["v": "off"]), false)
+        XCTAssertEqual(coerceBool(["v": ""]), false)
+        // unrecognized strings → nil (NOT true)
+        XCTAssertNil(coerceBool(["v": "maybe"]))
+        XCTAssertNil(coerceBool(["v": "weird"]))
+        // containers → nil
+        XCTAssertNil(coerceBool(["v": ["x": 1]]))
+        XCTAssertNil(coerceBool(["v": [1, 2]]))
+    }
 }
+
+// MARK: - Coercion test harness
+
+/// A single-key coding container used to exercise `decodeLenient` directly for
+/// each scalar target type. The value at key `"v"` is decoded through the
+/// lenient helper; a missing key yields `nil`.
+private enum CoercionKey: String, CodingKey { case v }
+
+// Each probe binds the concrete scalar overload of `decodeLenient` at its call
+// site (a generic wrapper would resolve to the non-coercing generic overload).
+private struct IntProbe: Decodable {
+    let value: Int?
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CoercionKey.self)
+        self.value = decodeLenient(Int.self, forKey: .v, in: c)
+    }
+}
+private struct StringProbe: Decodable {
+    let value: String?
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CoercionKey.self)
+        self.value = decodeLenient(String.self, forKey: .v, in: c)
+    }
+}
+private struct DoubleProbe: Decodable {
+    let value: Double?
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CoercionKey.self)
+        self.value = decodeLenient(Double.self, forKey: .v, in: c)
+    }
+}
+private struct BoolProbe: Decodable {
+    let value: Bool?
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CoercionKey.self)
+        self.value = decodeLenient(Bool.self, forKey: .v, in: c)
+    }
+}
+
+private func decodeProbe<P: Decodable>(_ type: P.Type, _ json: [String: Any]) -> P? {
+    let data = try! JSONSerialization.data(withJSONObject: json)
+    return try? JSONDecoder().decode(P.self, from: data)
+}
+
+private func coerceInt(_ json: [String: Any]) -> Int? { decodeProbe(IntProbe.self, json)?.value }
+private func coerceString(_ json: [String: Any]) -> String? { decodeProbe(StringProbe.self, json)?.value }
+private func coerceDouble(_ json: [String: Any]) -> Double? { decodeProbe(DoubleProbe.self, json)?.value }
+private func coerceBool(_ json: [String: Any]) -> Bool? { decodeProbe(BoolProbe.self, json)?.value }
 
 func fixtureJSON(_ name: String) throws -> [String: Any] {
     let data = try fixtureData(name)
