@@ -17,7 +17,7 @@ The API itself is so simple that it can easily be used even without an SDK: [doc
 `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/AudDMusic/audd-swift", from: "1.5.18"),
+.package(url: "https://github.com/AudDMusic/audd-swift", from: "1.5.19"),
 ```
 
 Get your API token at [dashboard.audd.io](https://dashboard.audd.io).
@@ -227,12 +227,15 @@ multi-hour file processing without affecting your standard-endpoint timeouts.
 
 | Class | Endpoints | Retried on |
 |---|---|---|
-| Recognition | `recognize`, `recognizeEnterprise`, `advanced.*` | network errors and 5xx **before** the upload reaches the server |
-| Read | `streams.list`, `streams.getCallbackURL`, longpoll | network errors and 5xx |
-| Mutating | `streams.setCallbackURL`, `streams.add`, `streams.delete`, `customCatalog.add` | network errors and 5xx (idempotent on the server) |
+| Recognition | `recognize`, `recognizeEnterprise`, `advanced.*` | connection-class failures (DNS, connect, TLS, timeouts, dropped network) and 5xx responses |
+| Read | `streams.list`, `streams.getCallbackURL`, longpoll | any network error, plus 408, 429, and 5xx |
+| Mutating | `streams.setCallbackURL`, `streams.add`, `streams.delete` | connection-class failures only — never 5xx (the change may already have been applied) |
+| Critical | `customCatalog.add` | never retried — the upload is metered, and re-sending it could double-bill |
 
-Recognition will not double-bill your account: once the server has accepted
-bytes, a 5xx after that is surfaced rather than retried.
+Anything outside those classes — including a failure after the server may
+already have processed the audio — is surfaced rather than retried, and
+`customCatalog.add` never retries at all: you decide whether to re-send a
+metered upload.
 
 **Inspection.** Pass `onEvent:` to receive an `AudDEvent` for every request /
 response / exception — useful for metrics, tracing, or dropping a `requestID`
