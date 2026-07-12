@@ -17,7 +17,7 @@ The API itself is so simple that it can easily be used even without an SDK: [doc
 `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/AudDMusic/audd-swift", from: "1.5.9"),
+.package(url: "https://github.com/AudDMusic/audd-swift", from: "1.5.17"),
 ```
 
 Get your API token at [dashboard.audd.io](https://dashboard.audd.io).
@@ -271,13 +271,13 @@ The callback POSTs raw bytes; parse them into a typed match or notification:
 // In your webhook handler, given the raw POST body as `Data`:
 switch try audd.streams.parseCallback(bodyData) {
 case .match(let match):
-    print("\(match.song.artist) — \(match.song.title)  score=\(match.song.score)")
+    print("\(match.song?.artist ?? "?") — \(match.song?.title ?? "?")  score=\(match.song?.score ?? 0)")
     for alt in match.alternatives {
         // alternatives may have a different artist/title — variant catalog releases
-        print("  alt: \(alt.artist) — \(alt.title)")
+        print("  alt: \(alt.artist ?? "?") — \(alt.title ?? "?")")
     }
 case .notification(let n):
-    print("notification:", n.notificationMessage)
+    print("notification:", n.notificationMessage ?? "?")
 }
 ```
 
@@ -294,13 +294,13 @@ import Vapor
 import AudD
 
 func routes(_ app: Application) throws {
-    let audd = AudD(apiToken: Environment.get("AUDD_API_TOKEN")!)
+    let audd = try AudD(apiToken: Environment.get("AUDD_API_TOKEN")!)
     app.post("audd", "callback") { req async throws -> HTTPStatus in
         let body = try req.content.decode(Data.self)
         let event = try audd.streams.parseCallback(body)
         switch event {
-        case .match(let m):       req.logger.info("\(m.song.artist) — \(m.song.title)")
-        case .notification(let n): req.logger.info("\(n.notificationMessage)")
+        case .match(let m):       req.logger.info("\(m.song?.artist ?? "?") — \(m.song?.title ?? "?")")
+        case .notification(let n): req.logger.info("\(n.notificationMessage ?? "?")")
         }
         return .ok
     }
@@ -313,7 +313,7 @@ func routes(_ app: Application) throws {
 import Hummingbird
 import AudD
 
-let audd = AudD(apiToken: ProcessInfo.processInfo.environment["AUDD_API_TOKEN"]!)
+let audd = try AudD(apiToken: ProcessInfo.processInfo.environment["AUDD_API_TOKEN"]!)
 let router = Router()
 router.post("/audd/callback") { req, ctx -> HTTPResponse.Status in
     let body = try await Data(buffer: req.body.collect(upTo: 1 << 20))
@@ -343,7 +343,7 @@ let poll = try await streams.longpoll(radioID: radioID)
 defer { Task { await poll.close() } }
 
 for await match in poll.matches {
-    print("\(match.song.artist) — \(match.song.title)")
+    print("\(match.song?.artist ?? "?") — \(match.song?.title ?? "?")")
 }
 ```
 
@@ -371,7 +371,7 @@ let poll = consumer.iterate()
 defer { Task { await poll.close() } }
 
 for await match in poll.matches {
-    print("\(match.song.artist) — \(match.song.title)")
+    print("\(match.song?.artist ?? "?") — \(match.song?.title ?? "?")")
 }
 ```
 

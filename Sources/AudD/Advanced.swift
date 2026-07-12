@@ -8,7 +8,7 @@
 @preconcurrency import Foundation
 
 #if canImport(FoundationNetworking)
-@preconcurrency import FoundationNetworking
+import FoundationNetworking
 #endif
 
 public struct Advanced: Sendable {

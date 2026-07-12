@@ -34,7 +34,7 @@ enum UserAgent {
         return "watchos"
         #elseif os(tvOS)
         return "tvos"
-        #elseif os(visionOS)
+        #elseif compiler(>=5.11) && os(visionOS)
         return "visionos"
         #elseif os(Linux)
         return "linux"

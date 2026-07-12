@@ -178,6 +178,90 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(body["timeout"] as? String, "no events before timeout")
         XCTAssertNotNil(body["timestamp"])
     }
+
+    // MARK: - Wrong-typed scalar fields must degrade to nil, never throw
+
+    /// A recognition response where `artist` arrives as a number (and `upc` as a
+    /// bool) must decode without throwing — every scalar degrades to `nil`
+    /// rather than aborting the whole parse. Well-typed neighbors still decode.
+    func testRecognizeWrongTypedScalarsDoNotThrow() throws {
+        let inner: [String: Any] = [
+            "artist": 123,          // number where String expected
+            "title": "Real Title",  // correct type — must survive
+            "audio_id": "not-a-number", // string where Int expected
+            "song_link": "https://lis.tn/abc",
+        ]
+        let result = try decode(RecognitionResult.self, from: inner)
+        XCTAssertNil(result.artist)
+        XCTAssertNil(result.audioID)
+        XCTAssertEqual(result.title, "Real Title")
+        XCTAssertEqual(result.songLink, "https://lis.tn/abc")
+        // The malformed values are still preserved in the raw payload.
+        XCTAssertNotNil(result.rawResponse.value)
+    }
+
+    /// A provider metadata block whose scalar arrives with the wrong type must
+    /// still decode — the bad field degrades to `nil`, siblings survive.
+    func testProviderWrongTypedScalarDoesNotThrow() throws {
+        let inner: [String: Any] = [
+            "artist": "Some Artist",
+            "title": "Some Title",
+            "spotify": [
+                "id": 12345,        // number where String expected
+                "name": "Track Name",
+                "duration_ms": "abc", // string where Int expected
+            ],
+        ]
+        let result = try decode(RecognitionResult.self, from: inner)
+        XCTAssertNotNil(result.spotify)
+        XCTAssertNil(result.spotify?.id)
+        XCTAssertNil(result.spotify?.durationMs)
+        XCTAssertEqual(result.spotify?.name, "Track Name")
+    }
+
+    /// An enterprise match whose `score` arrives as a string (rather than the
+    /// expected number) must degrade to `nil` without throwing.
+    func testEnterpriseWrongTypedScoreDoesNotThrow() throws {
+        let body: [String: Any] = [
+            "result": [
+                [
+                    "songs": [
+                        [
+                            "artist": "Some Artist",
+                            "title": "Some Title",
+                            "score": "eighty-one", // string where Int expected
+                        ],
+                    ],
+                    "offset": "0",
+                ],
+            ],
+        ]
+        let chunks = body["result"] as! [[String: Any]]
+        let chunk = try decode(EnterpriseChunkResult.self, from: chunks[0])
+        XCTAssertEqual(chunk.songs.count, 1)
+        XCTAssertNil(chunk.songs[0].score)
+        XCTAssertEqual(chunk.songs[0].artist, "Some Artist")
+    }
+
+    /// A stream-callback song whose `score` arrives with the wrong type must
+    /// still parse — the field degrades to `nil` and the match survives.
+    func testStreamCallbackWrongTypedScoreDoesNotThrow() throws {
+        let inner: [String: Any] = [
+            "radio_id": 7,
+            "results": [
+                [
+                    "artist": "Some Artist",
+                    "title": "Some Title",
+                    "score": ["unexpected": "object"], // object where Int expected
+                ],
+            ],
+        ]
+        let match = try decode(StreamCallbackMatch.self, from: inner)
+        XCTAssertNotNil(match.song)
+        XCTAssertNil(match.song?.score)
+        XCTAssertEqual(match.song?.artist, "Some Artist")
+        XCTAssertEqual(match.song?.title, "Some Title")
+    }
 }
 
 func fixtureJSON(_ name: String) throws -> [String: Any] {

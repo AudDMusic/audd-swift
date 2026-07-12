@@ -2,5 +2,5 @@
 import Foundation
 
 public enum AudDVersion {
-    public static let current: String = "1.5.16"
+    public static let current: String = "1.5.17"
 }

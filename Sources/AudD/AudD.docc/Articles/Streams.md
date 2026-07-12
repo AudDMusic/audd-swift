@@ -40,13 +40,13 @@ body with ``Streams/parseCallback(_:)``:
 // Inside your HTTP handler, given the raw POST body as `Data`:
 switch try audd.streams.parseCallback(bodyData) {
 case .match(let match):
-    print("\(match.song.artist) — \(match.song.title)")
+    print("\(match.song?.artist ?? "?") — \(match.song?.title ?? "?")")
     for alt in match.alternatives {
         // alternatives may have different artist/title — variant releases
-        print("  alt: \(alt.artist) — \(alt.title)")
+        print("  alt: \(alt.artist ?? "?") — \(alt.title ?? "?")")
     }
 case .notification(let n):
-    print("Stream event: \(n.notificationMessage)")
+    print("Stream event: \(n.notificationMessage ?? "?")")
 }
 ```
 
@@ -62,7 +62,7 @@ let poll = try await audd.streams.longpoll(category: category)
 defer { Task { await poll.close() } }
 
 for await match in poll.matches {
-    print("\(match.song.artist) — \(match.song.title)")
+    print("\(match.song?.artist ?? "?") — \(match.song?.title ?? "?")")
 }
 ```
 
@@ -90,7 +90,7 @@ let poll = consumer.iterate()
 defer { Task { await poll.close() } }
 
 for await match in poll.matches {
-    print("\(match.song.artist) — \(match.song.title)")
+    print("\(match.song?.artist ?? "?") — \(match.song?.title ?? "?")")
 }
 ```
 

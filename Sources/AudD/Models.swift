@@ -30,6 +30,18 @@ func lisTnStreamingURL(songLink: String?, provider: String) -> String? {
 
 // MARK: - Helpers for forward-compat decoding
 
+/// Decode a scalar field leniently: a missing key, a `null`, or a value of the
+/// wrong type all yield `nil` rather than throwing. A successful API response
+/// must never fail to parse because one scalar arrived with an unexpected type
+/// (e.g. `{"artist": 123}`) — the field simply degrades to `nil`.
+func decodeLenient<T: Decodable, K: CodingKey>(
+    _ type: T.Type,
+    forKey key: K,
+    in container: KeyedDecodingContainer<K>
+) -> T? {
+    return (try? container.decodeIfPresent(T.self, forKey: key)) ?? nil
+}
+
 /// Decode known keys via the model's `CodingKeys`, capture everything else in
 /// the `extras` dict.
 func decodeExtras<K: CodingKey & CaseIterable & RawRepresentable>(
@@ -108,16 +120,16 @@ public struct AppleMusicMetadata: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.artistName = try c.decodeIfPresent(String.self, forKey: .artistName)
-        self.url = try c.decodeIfPresent(String.self, forKey: .url)
-        self.durationInMillis = try c.decodeIfPresent(Int.self, forKey: .durationInMillis)
-        self.name = try c.decodeIfPresent(String.self, forKey: .name)
-        self.isrc = try c.decodeIfPresent(String.self, forKey: .isrc)
-        self.albumName = try c.decodeIfPresent(String.self, forKey: .albumName)
-        self.trackNumber = try c.decodeIfPresent(Int.self, forKey: .trackNumber)
-        self.composerName = try c.decodeIfPresent(String.self, forKey: .composerName)
-        self.discNumber = try c.decodeIfPresent(Int.self, forKey: .discNumber)
-        self.releaseDate = try c.decodeIfPresent(String.self, forKey: .releaseDate)
+        self.artistName = decodeLenient(String.self, forKey: .artistName, in: c)
+        self.url = decodeLenient(String.self, forKey: .url, in: c)
+        self.durationInMillis = decodeLenient(Int.self, forKey: .durationInMillis, in: c)
+        self.name = decodeLenient(String.self, forKey: .name, in: c)
+        self.isrc = decodeLenient(String.self, forKey: .isrc, in: c)
+        self.albumName = decodeLenient(String.self, forKey: .albumName, in: c)
+        self.trackNumber = decodeLenient(Int.self, forKey: .trackNumber, in: c)
+        self.composerName = decodeLenient(String.self, forKey: .composerName, in: c)
+        self.discNumber = decodeLenient(Int.self, forKey: .discNumber, in: c)
+        self.releaseDate = decodeLenient(String.self, forKey: .releaseDate, in: c)
         self.extras = try decodeExtras(from: decoder, knownKeys: CodingKeys.self)
     }
 }
@@ -143,14 +155,14 @@ public struct SpotifyMetadata: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try c.decodeIfPresent(String.self, forKey: .id)
-        self.name = try c.decodeIfPresent(String.self, forKey: .name)
-        self.durationMs = try c.decodeIfPresent(Int.self, forKey: .durationMs)
-        self.explicit = try c.decodeIfPresent(Bool.self, forKey: .explicit)
-        self.popularity = try c.decodeIfPresent(Int.self, forKey: .popularity)
-        self.trackNumber = try c.decodeIfPresent(Int.self, forKey: .trackNumber)
-        self.type = try c.decodeIfPresent(String.self, forKey: .type)
-        self.uri = try c.decodeIfPresent(String.self, forKey: .uri)
+        self.id = decodeLenient(String.self, forKey: .id, in: c)
+        self.name = decodeLenient(String.self, forKey: .name, in: c)
+        self.durationMs = decodeLenient(Int.self, forKey: .durationMs, in: c)
+        self.explicit = decodeLenient(Bool.self, forKey: .explicit, in: c)
+        self.popularity = decodeLenient(Int.self, forKey: .popularity, in: c)
+        self.trackNumber = decodeLenient(Int.self, forKey: .trackNumber, in: c)
+        self.type = decodeLenient(String.self, forKey: .type, in: c)
+        self.uri = decodeLenient(String.self, forKey: .uri, in: c)
         self.extras = try decodeExtras(from: decoder, knownKeys: CodingKeys.self)
     }
 }
@@ -168,10 +180,10 @@ public struct DeezerMetadata: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try c.decodeIfPresent(Int.self, forKey: .id)
-        self.title = try c.decodeIfPresent(String.self, forKey: .title)
-        self.duration = try c.decodeIfPresent(Int.self, forKey: .duration)
-        self.link = try c.decodeIfPresent(String.self, forKey: .link)
+        self.id = decodeLenient(Int.self, forKey: .id, in: c)
+        self.title = decodeLenient(String.self, forKey: .title, in: c)
+        self.duration = decodeLenient(Int.self, forKey: .duration, in: c)
+        self.link = decodeLenient(String.self, forKey: .link, in: c)
         self.extras = try decodeExtras(from: decoder, knownKeys: CodingKeys.self)
     }
 }
@@ -190,11 +202,11 @@ public struct NapsterMetadata: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try c.decodeIfPresent(String.self, forKey: .id)
-        self.name = try c.decodeIfPresent(String.self, forKey: .name)
-        self.isrc = try c.decodeIfPresent(String.self, forKey: .isrc)
-        self.artistName = try c.decodeIfPresent(String.self, forKey: .artistName)
-        self.albumName = try c.decodeIfPresent(String.self, forKey: .albumName)
+        self.id = decodeLenient(String.self, forKey: .id, in: c)
+        self.name = decodeLenient(String.self, forKey: .name, in: c)
+        self.isrc = decodeLenient(String.self, forKey: .isrc, in: c)
+        self.artistName = decodeLenient(String.self, forKey: .artistName, in: c)
+        self.albumName = decodeLenient(String.self, forKey: .albumName, in: c)
         self.extras = try decodeExtras(from: decoder, knownKeys: CodingKeys.self)
     }
 }
@@ -212,7 +224,7 @@ public struct MusicBrainzEntry: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try c.decodeIfPresent(String.self, forKey: .id)
+        self.id = decodeLenient(String.self, forKey: .id, in: c)
         // server may send int or string for score
         if let intScore = try? c.decode(Int.self, forKey: .score) {
             self.score = intScore
@@ -221,8 +233,8 @@ public struct MusicBrainzEntry: Sendable, Equatable, Decodable {
         } else {
             self.score = nil
         }
-        self.title = try c.decodeIfPresent(String.self, forKey: .title)
-        self.length = try c.decodeIfPresent(Int.self, forKey: .length)
+        self.title = decodeLenient(String.self, forKey: .title, in: c)
+        self.length = decodeLenient(Int.self, forKey: .length, in: c)
         self.extras = try decodeExtras(from: decoder, knownKeys: CodingKeys.self)
     }
 }
@@ -262,16 +274,16 @@ public struct RecognitionResult: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.timecode = try c.decodeIfPresent(String.self, forKey: .timecode)
-        self.audioID = try c.decodeIfPresent(Int.self, forKey: .audioID)
-        self.artist = try c.decodeIfPresent(String.self, forKey: .artist)
-        self.title = try c.decodeIfPresent(String.self, forKey: .title)
-        self.album = try c.decodeIfPresent(String.self, forKey: .album)
-        self.releaseDate = try c.decodeIfPresent(String.self, forKey: .releaseDate)
-        self.label = try c.decodeIfPresent(String.self, forKey: .label)
-        self.songLink = try c.decodeIfPresent(String.self, forKey: .songLink)
-        self.isrc = try c.decodeIfPresent(String.self, forKey: .isrc)
-        self.upc = try c.decodeIfPresent(String.self, forKey: .upc)
+        self.timecode = decodeLenient(String.self, forKey: .timecode, in: c)
+        self.audioID = decodeLenient(Int.self, forKey: .audioID, in: c)
+        self.artist = decodeLenient(String.self, forKey: .artist, in: c)
+        self.title = decodeLenient(String.self, forKey: .title, in: c)
+        self.album = decodeLenient(String.self, forKey: .album, in: c)
+        self.releaseDate = decodeLenient(String.self, forKey: .releaseDate, in: c)
+        self.label = decodeLenient(String.self, forKey: .label, in: c)
+        self.songLink = decodeLenient(String.self, forKey: .songLink, in: c)
+        self.isrc = decodeLenient(String.self, forKey: .isrc, in: c)
+        self.upc = decodeLenient(String.self, forKey: .upc, in: c)
         self.appleMusic = try? c.decodeIfPresent(AppleMusicMetadata.self, forKey: .appleMusic)
         self.spotify = try? c.decodeIfPresent(SpotifyMetadata.self, forKey: .spotify)
         self.deezer = try? c.decodeIfPresent(DeezerMetadata.self, forKey: .deezer)
@@ -446,18 +458,18 @@ public struct EnterpriseMatch: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.score = try c.decodeIfPresent(Int.self, forKey: .score)
-        self.timecode = try c.decodeIfPresent(String.self, forKey: .timecode)
-        self.artist = try c.decodeIfPresent(String.self, forKey: .artist)
-        self.title = try c.decodeIfPresent(String.self, forKey: .title)
-        self.album = try c.decodeIfPresent(String.self, forKey: .album)
-        self.releaseDate = try c.decodeIfPresent(String.self, forKey: .releaseDate)
-        self.label = try c.decodeIfPresent(String.self, forKey: .label)
-        self.isrc = try c.decodeIfPresent(String.self, forKey: .isrc)
-        self.upc = try c.decodeIfPresent(String.self, forKey: .upc)
-        self.songLink = try c.decodeIfPresent(String.self, forKey: .songLink)
-        self.startOffset = try c.decodeIfPresent(Int.self, forKey: .startOffset)
-        self.endOffset = try c.decodeIfPresent(Int.self, forKey: .endOffset)
+        self.score = decodeLenient(Int.self, forKey: .score, in: c)
+        self.timecode = decodeLenient(String.self, forKey: .timecode, in: c)
+        self.artist = decodeLenient(String.self, forKey: .artist, in: c)
+        self.title = decodeLenient(String.self, forKey: .title, in: c)
+        self.album = decodeLenient(String.self, forKey: .album, in: c)
+        self.releaseDate = decodeLenient(String.self, forKey: .releaseDate, in: c)
+        self.label = decodeLenient(String.self, forKey: .label, in: c)
+        self.isrc = decodeLenient(String.self, forKey: .isrc, in: c)
+        self.upc = decodeLenient(String.self, forKey: .upc, in: c)
+        self.songLink = decodeLenient(String.self, forKey: .songLink, in: c)
+        self.startOffset = decodeLenient(Int.self, forKey: .startOffset, in: c)
+        self.endOffset = decodeLenient(Int.self, forKey: .endOffset, in: c)
         self.startSeconds = nil
         self.endSeconds = nil
         self.extras = try decodeExtras(from: decoder, knownKeys: CodingKeys.self)
@@ -525,7 +537,7 @@ struct EnterpriseChunkResult: Decodable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.songs = decodeArrayIfPresent(EnterpriseMatch.self, forKey: .songs, in: c)
-        self.offset = try c.decodeIfPresent(String.self, forKey: .offset)
+        self.offset = decodeLenient(String.self, forKey: .offset, in: c)
     }
 }
 
@@ -548,10 +560,10 @@ public struct Stream: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.radioID = try c.decodeIfPresent(Int.self, forKey: .radioID)
-        self.url = try c.decodeIfPresent(String.self, forKey: .url)
-        self.streamRunning = try c.decodeIfPresent(Bool.self, forKey: .streamRunning)
-        self.longpollCategory = try c.decodeIfPresent(String.self, forKey: .longpollCategory)
+        self.radioID = decodeLenient(Int.self, forKey: .radioID, in: c)
+        self.url = decodeLenient(String.self, forKey: .url, in: c)
+        self.streamRunning = decodeLenient(Bool.self, forKey: .streamRunning, in: c)
+        self.longpollCategory = decodeLenient(String.self, forKey: .longpollCategory, in: c)
         self.extras = try decodeExtras(from: decoder, knownKeys: CodingKeys.self)
         self.rawResponse = try decodeRawResponse(from: decoder)
     }
@@ -589,15 +601,15 @@ public struct StreamCallbackSong: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.score = try c.decodeIfPresent(Int.self, forKey: .score)
-        self.artist = try c.decodeIfPresent(String.self, forKey: .artist)
-        self.title = try c.decodeIfPresent(String.self, forKey: .title)
-        self.album = try c.decodeIfPresent(String.self, forKey: .album)
-        self.releaseDate = try c.decodeIfPresent(String.self, forKey: .releaseDate)
-        self.label = try c.decodeIfPresent(String.self, forKey: .label)
-        self.songLink = try c.decodeIfPresent(String.self, forKey: .songLink)
-        self.isrc = try c.decodeIfPresent(String.self, forKey: .isrc)
-        self.upc = try c.decodeIfPresent(String.self, forKey: .upc)
+        self.score = decodeLenient(Int.self, forKey: .score, in: c)
+        self.artist = decodeLenient(String.self, forKey: .artist, in: c)
+        self.title = decodeLenient(String.self, forKey: .title, in: c)
+        self.album = decodeLenient(String.self, forKey: .album, in: c)
+        self.releaseDate = decodeLenient(String.self, forKey: .releaseDate, in: c)
+        self.label = decodeLenient(String.self, forKey: .label, in: c)
+        self.songLink = decodeLenient(String.self, forKey: .songLink, in: c)
+        self.isrc = decodeLenient(String.self, forKey: .isrc, in: c)
+        self.upc = decodeLenient(String.self, forKey: .upc, in: c)
         self.appleMusic = try? c.decodeIfPresent(AppleMusicMetadata.self, forKey: .appleMusic)
         self.spotify = try? c.decodeIfPresent(SpotifyMetadata.self, forKey: .spotify)
         self.deezer = try? c.decodeIfPresent(DeezerMetadata.self, forKey: .deezer)
@@ -641,9 +653,9 @@ public struct StreamCallbackMatch: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.radioID = try c.decodeIfPresent(Int.self, forKey: .radioID)
-        self.timestamp = try c.decodeIfPresent(String.self, forKey: .timestamp)
-        self.playLength = try c.decodeIfPresent(Int.self, forKey: .playLength)
+        self.radioID = decodeLenient(Int.self, forKey: .radioID, in: c)
+        self.timestamp = decodeLenient(String.self, forKey: .timestamp, in: c)
+        self.playLength = decodeLenient(Int.self, forKey: .playLength, in: c)
         let results = decodeArrayIfPresent(StreamCallbackSong.self, forKey: .results, in: c)
         self.song = results.first
         self.alternatives = Array(results.dropFirst())
@@ -696,10 +708,10 @@ public struct StreamCallbackNotification: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.radioID = try c.decodeIfPresent(Int.self, forKey: .radioID)
-        self.streamRunning = try c.decodeIfPresent(Bool.self, forKey: .streamRunning)
-        self.notificationCode = try c.decodeIfPresent(Int.self, forKey: .notificationCode)
-        self.notificationMessage = try c.decodeIfPresent(String.self, forKey: .notificationMessage)
+        self.radioID = decodeLenient(Int.self, forKey: .radioID, in: c)
+        self.streamRunning = decodeLenient(Bool.self, forKey: .streamRunning, in: c)
+        self.notificationCode = decodeLenient(Int.self, forKey: .notificationCode, in: c)
+        self.notificationMessage = decodeLenient(String.self, forKey: .notificationMessage, in: c)
         self.extras = try decodeExtras(from: decoder, knownKeys: CodingKeys.self)
         self.time = nil
         self.rawResponse = nil
@@ -758,14 +770,14 @@ public struct LyricsResult: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.artist = try c.decodeIfPresent(String.self, forKey: .artist)
-        self.title = try c.decodeIfPresent(String.self, forKey: .title)
-        self.lyrics = try c.decodeIfPresent(String.self, forKey: .lyrics)
-        self.songID = try c.decodeIfPresent(Int.self, forKey: .songID)
-        self.media = try c.decodeIfPresent(String.self, forKey: .media)
-        self.fullTitle = try c.decodeIfPresent(String.self, forKey: .fullTitle)
-        self.artistID = try c.decodeIfPresent(Int.self, forKey: .artistID)
-        self.songLink = try c.decodeIfPresent(String.self, forKey: .songLink)
+        self.artist = decodeLenient(String.self, forKey: .artist, in: c)
+        self.title = decodeLenient(String.self, forKey: .title, in: c)
+        self.lyrics = decodeLenient(String.self, forKey: .lyrics, in: c)
+        self.songID = decodeLenient(Int.self, forKey: .songID, in: c)
+        self.media = decodeLenient(String.self, forKey: .media, in: c)
+        self.fullTitle = decodeLenient(String.self, forKey: .fullTitle, in: c)
+        self.artistID = decodeLenient(Int.self, forKey: .artistID, in: c)
+        self.songLink = decodeLenient(String.self, forKey: .songLink, in: c)
         self.extras = try decodeExtras(from: decoder, knownKeys: CodingKeys.self)
         self.rawResponse = try decodeRawResponse(from: decoder)
     }
