@@ -112,7 +112,7 @@ print(result.spotify?.uri ?? "")     // spotify:track:...
 print(result.previewUrl() ?? "")     // first preview across requested providers, nil if none
 ```
 
-Valid `returnMetadata` values: `apple_music`, `spotify`, `deezer`, `napster`,
+Valid `returnMetadata` values: `apple_music`, `spotify`, `deezer`,
 `musicbrainz`. The corresponding properties (`appleMusic`, `spotify`, …) are
 `nil` when not requested.
 
