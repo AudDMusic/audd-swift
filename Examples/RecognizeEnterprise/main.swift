@@ -1,4 +1,4 @@
-// Recognize a long-form audio file (>25 s, up to ~120 minutes) on the
+// Recognize music beyond the first 12 seconds of an audio file on the
 // enterprise endpoint with chunk-based timecode results.
 //
 // Usage: AUDD_API_TOKEN=... swift run RecognizeEnterprise <path-to-audio-file>

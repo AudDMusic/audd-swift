@@ -33,9 +33,9 @@ is a convenience factory for the env-var path.
 
 ### Capabilities
 
-- **Recognition** — ``AudD/recognize(_:return:market:)-7jkwp`` for short
-  files (≤ 25 s); ``AudD/recognizeEnterprise(_:return:skip:every:limit:skipFirstSeconds:useTimecode:accurateOffsets:)``
-  for arbitrarily long files.
+- **Recognition** — ``AudD/recognize(_:return:market:)-7jkwp`` analyzes the
+  first 12 seconds of audio; ``AudD/recognizeEnterprise(_:return:skip:every:limit:skipFirstSeconds:useTimecode:accurateOffsets:)``
+  scans the whole file.
 - **Custom catalog** — ``CustomCatalog/add(audioID:source:)`` adds songs to your
   private fingerprint database. Enterprise access required; this is **not**
   for music recognition.

@@ -17,7 +17,7 @@ The API itself is so simple that it can easily be used even without an SDK: [doc
 `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/AudDMusic/audd-swift", from: "1.5.19"),
+.package(url: "https://github.com/AudDMusic/audd-swift", from: "1.5.20"),
 ```
 
 Get your API token at [dashboard.audd.io](https://dashboard.audd.io).
@@ -396,8 +396,8 @@ swift package generate-documentation --target AudD
 ## Custom catalog (advanced)
 
 > **The custom-catalog endpoint is NOT how you submit audio for music recognition.**
-> For recognition, use `recognize` (or `recognizeEnterprise` for files longer
-> than 25 seconds). The custom-catalog endpoint adds songs to your *private*
+> For recognition, use `recognize` (or `recognizeEnterprise` to scan beyond the
+> first 12 seconds of a file). The custom-catalog endpoint adds songs to your *private*
 > fingerprint database so future `recognize` calls on your account can
 > identify *your own* tracks.
 > Requires special access — contact api@audd.io.

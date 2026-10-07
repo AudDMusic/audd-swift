@@ -6,11 +6,11 @@ Recognize music from URLs, files, raw bytes, or input streams.
 
 The SDK exposes two recognition endpoints:
 
-- ``AudD/recognize(_:return:market:)-7jkwp`` — the standard endpoint. Files up
-  to ~25 seconds (server-side limit); short clips of YouTube/Spotify/etc. by
+- ``AudD/recognize(_:return:market:)-7jkwp`` — the standard endpoint. The first
+  12 seconds of audio are analyzed; short clips of YouTube/Spotify/etc. by
   URL also work.
 - ``AudD/recognizeEnterprise(_:return:skip:every:limit:skipFirstSeconds:useTimecode:accurateOffsets:)``
-  — the enterprise endpoint. No length limit; chunks the input server-side and
+  — the enterprise endpoint. Scans the whole file; chunks the input server-side and
   returns one or more matches. Default `limit: 1`.
 
 Both accept a ``Source`` value:
