@@ -59,6 +59,29 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(match.upc, "00602547037169")
     }
 
+    func testEnterpriseCustomMatch() throws {
+        let body = try fixtureJSON("enterprise_custom_match.json")
+        let chunks = body["result"] as! [[String: Any]]
+        let chunk = try decode(EnterpriseChunkResult.self, from: chunks[0])
+        XCTAssertEqual(chunk.songs.count, 1)
+        let match = chunk.songs[0]
+        XCTAssertEqual(match.audioID, 146)
+        XCTAssertEqual(match.timecode, "01:45")
+        XCTAssertTrue(match.isCustomMatch)
+        XCTAssertFalse(match.isPublicMatch)
+        XCTAssertNil(match.extras["audio_id"])
+    }
+
+    func testEnterprisePublicMatchHasNoAudioID() throws {
+        let body = try fixtureJSON("enterprise_with_isrc_upc.json")
+        let chunks = body["result"] as! [[String: Any]]
+        let chunk = try decode(EnterpriseChunkResult.self, from: chunks[0])
+        let match = chunk.songs[0]
+        XCTAssertNil(match.audioID)
+        XCTAssertFalse(match.isCustomMatch)
+        XCTAssertTrue(match.isPublicMatch)
+    }
+
     /// An enterprise response whose song omits `score` (and `isrc`/`upc`/`label`)
     /// must decode without throwing — those fields are not structurally
     /// guaranteed on the enterprise endpoint. Regression for the
@@ -244,6 +267,17 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(chunk.songs.count, 1)
         XCTAssertNil(chunk.songs[0].score)
         XCTAssertEqual(chunk.songs[0].artist, "Some Artist")
+    }
+
+    /// An enterprise match whose `audio_id` arrives as a numeric string is
+    /// coerced to `Int`; a non-numeric string degrades to `nil`.
+    func testEnterpriseAudioIDStringCoercion() throws {
+        let numeric = try decode(EnterpriseMatch.self, from: ["audio_id": "146", "score": 100])
+        XCTAssertEqual(numeric.audioID, 146)
+        XCTAssertTrue(numeric.isCustomMatch)
+        let garbage = try decode(EnterpriseMatch.self, from: ["audio_id": "not-a-number", "score": 100])
+        XCTAssertNil(garbage.audioID)
+        XCTAssertFalse(garbage.isCustomMatch)
     }
 
     /// A stream-callback song whose `score` arrives with the wrong type must

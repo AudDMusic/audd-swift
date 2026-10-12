@@ -117,8 +117,9 @@ Valid `returnMetadata` values: `apple_music`, `spotify`, `deezer`,
 `nil` when not requested.
 
 `EnterpriseMatch` (returned by `recognizeEnterprise`) carries the same core
-tags plus `score`, `isrc`, `upc`, and `startSeconds` / `endSeconds` — where the
-song plays in your file, in seconds. These are precise because
+tags plus `score`, `isrc`, `upc`, `audioID` (set on matches from your custom
+catalog, where `isCustomMatch` is `true`), and `startSeconds` / `endSeconds` —
+where the song plays in your file, in seconds. These are precise because
 `recognizeEnterprise` requests accurate offsets by default (pass
 `accurateOffsets: false` to opt out). The raw fragment-relative `startOffset` /
 `endOffset` (milliseconds within the matched fragment) sit behind them. Access

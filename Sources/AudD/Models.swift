@@ -547,6 +547,10 @@ public struct RecognitionResult: Sendable, Equatable, Decodable {
 public struct EnterpriseMatch: Sendable, Equatable, Decodable {
     public let score: Int?
     public let timecode: String?
+    /// The `audio_id` you assigned when adding the song to your custom
+    /// catalog. Set only for matches from your custom catalog; `nil` for
+    /// public-catalog matches.
+    public let audioID: Int?
     public let artist: String?
     public let title: String?
     public let album: String?
@@ -575,7 +579,9 @@ public struct EnterpriseMatch: Sendable, Equatable, Decodable {
     // chunk's `offset` after decoding — they are deliberately excluded from
     // `CodingKeys` so decoding never expects them on the wire.
     enum CodingKeys: String, CodingKey, CaseIterable {
-        case score, timecode, artist, title, album
+        case score, timecode
+        case audioID = "audio_id"
+        case artist, title, album
         case releaseDate = "release_date"
         case label, isrc, upc
         case songLink = "song_link"
@@ -587,6 +593,7 @@ public struct EnterpriseMatch: Sendable, Equatable, Decodable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.score = decodeLenient(Int.self, forKey: .score, in: c)
         self.timecode = decodeLenient(String.self, forKey: .timecode, in: c)
+        self.audioID = decodeLenient(Int.self, forKey: .audioID, in: c)
         self.artist = decodeLenient(String.self, forKey: .artist, in: c)
         self.title = decodeLenient(String.self, forKey: .title, in: c)
         self.album = decodeLenient(String.self, forKey: .album, in: c)
@@ -603,8 +610,17 @@ public struct EnterpriseMatch: Sendable, Equatable, Decodable {
         self.rawResponse = try decodeRawResponse(from: decoder)
     }
 
-    public var isCustomMatch: Bool { false }
-    public var isPublicMatch: Bool { artist != nil || title != nil }
+    /// `true` when the match came from the caller's private custom catalog
+    /// (i.e. `audio_id` is set).
+    public var isCustomMatch: Bool {
+        audioID != nil
+    }
+
+    /// `true` when the match came from AudD's public catalog (artist/title set).
+    public var isPublicMatch: Bool {
+        audioID == nil && (artist != nil || title != nil)
+    }
+
     public var thumbnailURL: String? {
         return lisTnStreamingURL(songLink: songLink, provider: "thumb")
     }
