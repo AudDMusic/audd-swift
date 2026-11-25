@@ -33,7 +33,7 @@ public struct AudDEvent: Sendable {
     /// or the request failed with a network/decoding error.
     public let kind: Kind
 
-    /// AudD method name, e.g. `"recognize"`, `"addStream"`, `"findLyrics"`.
+    /// AudD method name: `"recognize"` or `"recognizeEnterprise"`.
     public let method: String
 
     /// URL the request was/is being sent to. Never carries the api_token.
@@ -113,6 +113,9 @@ public actor AudD {
     private let backoffFactor: Double
     private let httpStandard: HTTPClient
     private let httpEnterprise: HTTPClient
+    /// Longpoll requests: never carry the api_token, and their session allows
+    /// the server's longest hold.
+    private let httpLongpoll: HTTPClient
     /// Override base URL — used by the test harness to point at a mock.
     private let apiBase: URL
     private let enterpriseBase: URL
@@ -122,11 +125,18 @@ public actor AudD {
     /// `AUDD_API_TOKEN` from the environment. Throws `AudDError.configuration`
     /// if neither is set. See spec §7.11.
     ///
-    /// - Parameter onEvent: optional inspection hook (spec §7.7a). Receives
-    ///   one event per request lifecycle phase: `.request` before the request
-    ///   leaves, `.response` once a response is decoded, `.exception` if the
-    ///   request failed (network, decoding, or API error). Hook exceptions
-    ///   are swallowed; the api_token is never included.
+    /// - Parameters:
+    ///   - maxRetries: total attempts per call, the first one included; values
+    ///     below 1 mean a single attempt. Which failures are retried depends on
+    ///     the endpoint (see ``RetryClass``).
+    ///   - backoffFactor: initial pause between attempts, in seconds (jittered,
+    ///     doubling per attempt).
+    ///   - onEvent: optional inspection hook (spec §7.7a) for `recognize` and
+    ///     `recognizeEnterprise`. Receives one event per request lifecycle
+    ///     phase: `.request` before the request leaves, `.response` once a
+    ///     response is decoded, `.exception` if the request failed (network,
+    ///     decoding, or API error). Hook exceptions are swallowed; the
+    ///     api_token is never included.
     public init(
         apiToken: String? = nil,
         maxRetries: Int = 3,
@@ -143,6 +153,7 @@ public actor AudD {
         self.backoffFactor = backoffFactor
         self.httpStandard = HTTPClient(apiToken: token, timeouts: .standard, urlSession: urlSession)
         self.httpEnterprise = HTTPClient(apiToken: token, timeouts: .enterprise, urlSession: enterpriseURLSession ?? urlSession)
+        self.httpLongpoll = HTTPClient(apiToken: token, timeouts: .longpoll, urlSession: urlSession, cancelsOnClose: true)
         self.apiBase = apiBase
         self.enterpriseBase = enterpriseBase
         self.onEvent = onEvent
@@ -161,6 +172,7 @@ public actor AudD {
         self.apiToken = newToken
         httpStandard.setApiToken(newToken)
         httpEnterprise.setApiToken(newToken)
+        httpLongpoll.setApiToken(newToken)
     }
 
     /// Construct exclusively from the `AUDD_API_TOKEN` environment variable.
@@ -190,35 +202,45 @@ public actor AudD {
     // MARK: - Lifecycle
 
     /// Explicit disposal; release URLSessions early. `deinit` also closes.
+    ///
+    /// Recognition requests already running finish first; a longpoll request
+    /// waiting on the server is cancelled and its poll ends. Requests started
+    /// after `close()` fail with ``AudDError/connection(message:underlying:)``
+    /// (unless the client runs on a `URLSession` you injected).
     public func close() {
         httpStandard.close()
         httpEnterprise.close()
+        httpLongpoll.close()
     }
 
     // MARK: - Internal: retry policies
 
-    private func recognitionPolicy() -> RetryPolicy {
+    private nonisolated func recognitionPolicy() -> RetryPolicy {
         RetryPolicy(retryClass: .recognition, maxAttempts: maxRetries, backoffFactor: backoffFactor)
     }
 
-    private func readPolicy() -> RetryPolicy {
+    private nonisolated func readPolicy() -> RetryPolicy {
         RetryPolicy(retryClass: .read, maxAttempts: maxRetries, backoffFactor: backoffFactor)
     }
 
-    private func mutatingPolicy() -> RetryPolicy {
+    private nonisolated func mutatingPolicy() -> RetryPolicy {
         RetryPolicy(retryClass: .mutating, maxAttempts: maxRetries, backoffFactor: backoffFactor)
     }
 
-    private func criticalPolicy() -> RetryPolicy {
+    private nonisolated func criticalPolicy() -> RetryPolicy {
         // Single attempt; no retry on 5xx or transport failures.
-        // Used for metered, non-idempotent calls (customCatalog.add).
+        // Used for customCatalog.add, which is never re-sent automatically.
         RetryPolicy(retryClass: .critical, maxAttempts: 1, backoffFactor: backoffFactor)
     }
 
     // MARK: - Recognition
 
-    /// Recognize music from a public URL string.
-    /// Convenience overload; defers to `recognize(_:returnMetadata:market:)` with `.url(...)`.
+    /// Recognize music from a public URL string or a local file path.
+    ///
+    /// An `http(s)://` string is sent as `.url(...)` for the server to fetch.
+    /// A `file://` URL or a path to an existing file is uploaded as
+    /// `.file(...)`. A path that doesn't exist throws
+    /// ``AudDError/invalidArgument(_:)`` before anything is sent.
     @discardableResult
     public func recognize(
         _ urlString: String,
@@ -226,11 +248,8 @@ public actor AudD {
         market: String? = nil,
         extraParameters: [String: String]? = nil
     ) async throws -> RecognitionResult? {
-        guard let url = URL(string: urlString) else {
-            throw AudDError.invalidArgument("\(urlString) is not a valid URL")
-        }
         return try await recognize(
-            .url(url),
+            sourceForString(urlString),
             returnMetadata: returnMetadata,
             market: market,
             extraParameters: extraParameters
@@ -326,6 +345,9 @@ public actor AudD {
     /// seconds, precise because accurate offsets are requested by default.
     ///
     /// - Parameters:
+    ///   - limit: the most 12-second chunks to recognize. `nil` (the default)
+    ///     sends no limit, so the whole file is scanned. Each chunk processed
+    ///     counts as one request: set a small limit while you develop and test.
     ///   - accurateOffsets: request precise per-fragment offsets. Defaults to
     ///     `true`; pass `false` to opt out.
     ///   - extraParameters: additional form fields the typed params don't cover.
@@ -335,7 +357,7 @@ public actor AudD {
         returnMetadata: [String]? = nil,
         skip: Int? = nil,
         every: Int? = nil,
-        limit: Int? = 1, // hard rule: always pass limit=1 to enterprise calls
+        limit: Int? = nil,
         skipFirstSeconds: Int? = nil,
         useTimecode: Bool? = nil,
         accurateOffsets: Bool? = nil,
@@ -431,23 +453,80 @@ public actor AudD {
     }
 
     // MARK: - Namespaces
+    //
+    // The namespaces are `nonisolated`: reading one needs no `await`, so a
+    // webhook handler can call `audd.streams.parseCallback(body)` directly.
+    // They share the client's HTTP layer and always use its current api_token.
 
     /// `audd.streams.add(...)`, `audd.streams.list()`, etc.
-    public var streams: Streams {
-        Streams(http: httpStandard, apiBase: apiBase, apiToken: apiToken, readPolicy: readPolicy(), mutatingPolicy: mutatingPolicy())
+    public nonisolated var streams: Streams {
+        Streams(
+            http: httpStandard,
+            longpollHTTP: httpLongpoll,
+            apiBase: apiBase,
+            readPolicy: readPolicy(),
+            mutatingPolicy: mutatingPolicy()
+        )
     }
 
     /// `audd.customCatalog.add(audioID: ..., source: ...)`.
-    public var customCatalog: CustomCatalog {
-        // Custom-catalog upload is metered; uses the .critical policy
-        // (1 attempt, no retry on any failure) to avoid double-charging.
+    public nonisolated var customCatalog: CustomCatalog {
+        // .critical policy: one attempt, never retried automatically.
         CustomCatalog(http: httpStandard, apiBase: apiBase, uploadPolicy: criticalPolicy())
     }
 
     /// `audd.advanced.findLyrics(...)`, `audd.advanced.rawRequest(...)`.
-    public var advanced: Advanced {
+    public nonisolated var advanced: Advanced {
         Advanced(http: httpStandard, apiBase: apiBase, recognitionPolicy: recognitionPolicy())
     }
+}
+
+// MARK: - Redacted description
+
+extension AudD: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    /// Describes the client without its api_token.
+    public nonisolated var description: String {
+        "AudD(apiBase: \(apiBase.absoluteString), enterpriseBase: \(enterpriseBase.absoluteString), maxRetries: \(maxRetries), apiToken: <redacted>)"
+    }
+
+    public nonisolated var debugDescription: String { description }
+
+    /// A mirror that leaves out the api_token, so `dump(audd)` and debuggers
+    /// never show it.
+    public nonisolated var customMirror: Mirror {
+        Mirror(self, children: [
+            "apiBase": apiBase,
+            "enterpriseBase": enterpriseBase,
+            "maxRetries": maxRetries,
+            "backoffFactor": backoffFactor,
+            "apiToken": "<redacted>",
+        ], displayStyle: .class)
+    }
+}
+
+/// The ``Source`` a `recognize(_ urlString:)` string stands for.
+func sourceForString(_ value: String) throws -> Source {
+    if let url = URL(string: value), let scheme = url.scheme?.lowercased() {
+        if scheme == "http" || scheme == "https" {
+            return .url(url)
+        }
+        if scheme == "file" {
+            return .file(url)
+        }
+    }
+    let path = (value as NSString).expandingTildeInPath
+    if FileManager.default.fileExists(atPath: path) {
+        return .file(URL(fileURLWithPath: path))
+    }
+    if value.hasPrefix("/") || value.hasPrefix("~") || value.hasPrefix("./") || value.hasPrefix("../") {
+        throw AudDError.invalidArgument(
+            "No file at \(value). Pass an http(s) URL, or the path of an existing file."
+        )
+    }
+    guard let url = URL(string: value) else {
+        throw AudDError.invalidArgument("\(value) is not a valid URL")
+    }
+    return .url(url)
 }
 
 // MARK: - Decoding helpers (file-private to module)

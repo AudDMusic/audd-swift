@@ -234,9 +234,161 @@ final class RecognitionTests: XCTestCase {
         }
         await audd.close()
     }
+
+    // MARK: - Enterprise limit
+
+    func testEnterpriseSendsNoLimitByDefault() async throws {
+        let session = mockSession()
+        let payload = Data("{\"status\":\"success\",\"result\":[]}".utf8)
+        MockURLProtocol.register { request in
+            (makeJSONResponse(request.url!, body: payload), payload)
+        }
+        let audd = try AudD(apiToken: "test", urlSession: session)
+        _ = try await audd.recognizeEnterprise(.data(Data("audio".utf8)))
+        let req = try XCTUnwrap(MockURLProtocol.requestLog.first { $0.url?.host == "enterprise.audd.io" })
+        let body = String(decoding: try XCTUnwrap(MockURLProtocol.bodyData(for: req)), as: UTF8.self)
+        XCTAssertFalse(body.contains("name=\"limit\""), "no limit field unless the caller sets one")
+        await audd.close()
+    }
+
+    func testEnterpriseSendsAnExplicitLimit() async throws {
+        let session = mockSession()
+        let payload = Data("{\"status\":\"success\",\"result\":[]}".utf8)
+        MockURLProtocol.register { request in
+            (makeJSONResponse(request.url!, body: payload), payload)
+        }
+        let audd = try AudD(apiToken: "test", urlSession: session)
+        _ = try await audd.recognizeEnterprise(.data(Data("audio".utf8)), limit: 3)
+        let req = try XCTUnwrap(MockURLProtocol.requestLog.first { $0.url?.host == "enterprise.audd.io" })
+        let body = String(decoding: try XCTUnwrap(MockURLProtocol.bodyData(for: req)), as: UTF8.self)
+        XCTAssertTrue(body.contains("name=\"limit\"\r\n\r\n3\r\n"))
+        await audd.close()
+    }
+
+    // MARK: - String sources
+
+    func testStringSourceClassification() throws {
+        guard case .url(let web) = try sourceForString("https://audd.tech/example.mp3") else {
+            return XCTFail("https string must be a URL source")
+        }
+        XCTAssertEqual(web.absoluteString, "https://audd.tech/example.mp3")
+
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("audd-source-\(UUID().uuidString).mp3")
+        try Data("audio".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        guard case .file(let local) = try sourceForString(file.path) else {
+            return XCTFail("an existing path must be a file source")
+        }
+        XCTAssertEqual(local.path, file.path)
+        guard case .file = try sourceForString(file.absoluteString) else {
+            return XCTFail("a file:// URL must be a file source")
+        }
+
+        XCTAssertThrowsError(try sourceForString("/no/such/dir/clip.mp3")) { error in
+            guard case AudDError.invalidArgument = error else {
+                return XCTFail("expected invalidArgument, got \(error)")
+            }
+        }
+    }
+
+    func testRecognizeLocalPathUploadsTheFile() async throws {
+        let session = mockSession()
+        let payload = try fixtureData("recognize_basic.json")
+        MockURLProtocol.register { request in
+            (makeJSONResponse(request.url!, body: payload), payload)
+        }
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("audd-clip-\(UUID().uuidString).mp3")
+        try Data("fake audio bytes".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        let audd = try AudD(apiToken: "test", urlSession: session)
+        _ = try await audd.recognize(file.path)
+        let req = try XCTUnwrap(MockURLProtocol.requestLog.first)
+        let body = String(decoding: try XCTUnwrap(MockURLProtocol.bodyData(for: req)), as: UTF8.self)
+        XCTAssertTrue(body.contains("name=\"file\"; filename=\"\(file.lastPathComponent)\""))
+        XCTAssertTrue(body.contains("fake audio bytes"))
+        XCTAssertFalse(body.contains("name=\"url\""))
+        await audd.close()
+    }
+
+    // MARK: - Attempts
+
+    func testMaxRetriesZeroOrNegativeMakesOneAttempt() async throws {
+        for maxRetries in [0, -1] {
+            MockURLProtocol.reset()
+            let session = mockSession()
+            let payload = try fixtureData("recognize_basic.json")
+            MockURLProtocol.register { request in
+                (makeJSONResponse(request.url!, body: payload), payload)
+            }
+            let audd = try AudD(apiToken: "test", maxRetries: maxRetries, urlSession: session)
+            let result = try await audd.recognize("https://audd.tech/example.mp3")
+            XCTAssertEqual(result?.artist, "Tears For Fears")
+            XCTAssertEqual(MockURLProtocol.requestLog.count, 1)
+            await audd.close()
+        }
+        XCTAssertEqual(RetryPolicy(retryClass: .read, maxAttempts: 0).maxAttempts, 1)
+        XCTAssertEqual(RetryPolicy(retryClass: .recognition, maxAttempts: -5).maxAttempts, 1)
+    }
+
+    // MARK: - Cancellation
+
+    func testCancellingRecognizeCancelsTheRequest() async throws {
+        HangingURLProtocol.reset()
+        let audd = try AudD(apiToken: "test", urlSession: hangingSession())
+        let started = Date()
+        let task = Task { try await audd.recognize("https://audd.tech/example.mp3") }
+        let sent = await waitUntil { HangingURLProtocol.startedCount >= 1 }
+        XCTAssertTrue(sent)
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("expected cancellation")
+        } catch is CancellationError {
+            // expected
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5)
+        let stopped = await waitUntil { HangingURLProtocol.stoppedCount >= 1 }
+        XCTAssertTrue(stopped)
+        XCTAssertEqual(HangingURLProtocol.startedCount, 1, "a cancelled call is not retried")
+        await audd.close()
+    }
+
+    func testClosedClientRefusesRequestsInsteadOfTrapping() async throws {
+        // An SDK-owned session: after close() Foundation would trap on a new task.
+        let session = ManagedSession(urlSession: nil, timeouts: .standard)
+        session.close(cancelRunning: true)
+        let request = URLRequest(url: URL(string: "https://api.audd.io/")!)
+        do {
+            _ = try await performDataTask(session: session, request: request)
+            XCTFail("expected an error")
+        } catch is ClientClosedError {
+            // expected
+        }
+
+        let audd = try AudD(apiToken: "test")
+        await audd.close()
+        do {
+            _ = try await audd.recognize("https://audd.tech/example.mp3")
+            XCTFail("expected an error")
+        } catch AudDError.connection(_, let underlying) {
+            XCTAssertTrue(underlying is ClientClosedError)
+        }
+    }
 }
 
 func fixtureData(_ name: String) throws -> Data {
+    // The contract workflow sets AUDD_OPENAPI_FIXTURES to a checkout of the
+    // shared audd-openapi fixtures. Without it, or for a fixture that only
+    // exists here, the copies bundled with the tests are used.
+    if let dir = ProcessInfo.processInfo.environment["AUDD_OPENAPI_FIXTURES"], !dir.isEmpty {
+        let shared = URL(fileURLWithPath: dir).appendingPathComponent(name)
+        if FileManager.default.fileExists(atPath: shared.path) {
+            return try Data(contentsOf: shared)
+        }
+    }
     let url = Bundle.module.url(forResource: name, withExtension: nil, subdirectory: "Fixtures")
         ?? Bundle.module.url(forResource: name, withExtension: nil)
     guard let url else {

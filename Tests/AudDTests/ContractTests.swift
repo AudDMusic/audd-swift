@@ -200,6 +200,45 @@ final class ContractTests: XCTestCase {
         let body = try fixtureJSON("longpoll_no_events.json")
         XCTAssertEqual(body["timeout"] as? String, "no events before timeout")
         XCTAssertNotNil(body["timestamp"])
+
+        guard case .delivered(let events, let since) = classifyLongpollResponse(longpollEnvelope(try fixtureData("longpoll_no_events.json"))) else {
+            return XCTFail("a timeout response is not an error")
+        }
+        XCTAssertTrue(events.isEmpty)
+        XCTAssertEqual(since, longpollTimestamp(body["timestamp"]))
+    }
+
+    func testLongpollEvents() throws {
+        let body = try fixtureJSON("longpoll_events.json")
+        let raw = try XCTUnwrap(body["events"] as? [[String: Any]])
+        let timestamps = raw.compactMap { longpollTimestamp($0["timestamp"]) }
+
+        guard case .delivered(let events, let since) = classifyLongpollResponse(longpollEnvelope(try fixtureData("longpoll_events.json"))) else {
+            return XCTFail("an events response is not an error")
+        }
+        XCTAssertEqual(events.count, raw.count)
+        XCTAssertEqual(since, timestamps.max())
+        for event in events {
+            guard case .match(let match) = event else {
+                return XCTFail("expected a match, got \(event)")
+            }
+            XCTAssertNotNil(match.radioID)
+            XCTAssertNotNil(match.song?.artist)
+            XCTAssertNotNil(match.song?.title)
+        }
+    }
+
+    func testLongpollError() throws {
+        let body = try fixtureJSON("longpoll_error.json")
+        let text = try XCTUnwrap(body["error"] as? String)
+        guard case .terminal(let error) = classifyLongpollResponse(longpollEnvelope(try fixtureData("longpoll_error.json"))) else {
+            return XCTFail("an error response must end the subscription")
+        }
+        guard case AudDError.api(let detail) = error else {
+            return XCTFail("expected AudDError.api, got \(error)")
+        }
+        XCTAssertEqual(detail.kind, .invalidRequest)
+        XCTAssertEqual(detail.message, text)
     }
 
     // MARK: - Wrong-typed scalar fields must degrade to nil, never throw

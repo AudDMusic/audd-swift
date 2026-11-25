@@ -27,4 +27,20 @@ enum AudDLog {
             FileHandle.standardError.write(data)
         }
     }
+
+    /// A condition the caller may want to know about that doesn't stop the
+    /// SDK (for example a longpoll response it had to wait out).
+    static func warning(_ message: String, category: String) {
+        #if canImport(os)
+        if #available(macOS 11.0, iOS 14.0, watchOS 7.0, tvOS 14.0, *) {
+            let logger = Logger(subsystem: "io.audd.audd-swift", category: category)
+            logger.warning("\(message, privacy: .public)")
+            return
+        }
+        #endif
+        let line = "[\(category)] audd-swift: \(message)\n"
+        if let data = line.data(using: .utf8) {
+            FileHandle.standardError.write(data)
+        }
+    }
 }

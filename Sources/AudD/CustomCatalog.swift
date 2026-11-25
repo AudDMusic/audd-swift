@@ -10,9 +10,9 @@ import FoundationNetworking
 public struct CustomCatalog: Sendable {
     let http: HTTPClient
     let apiBase: URL
-    /// Retry policy used for metered upload calls. Always the `.critical`
-    /// class (single attempt, no retry on 5xx or transport failures) so a
-    /// transient failure surfaces cleanly instead of silently re-billing.
+    /// Retry policy for uploads. Always the `.critical` class: a single
+    /// attempt, no retry on 5xx or transport failures, so every failure
+    /// reaches the caller.
     let uploadPolicy: RetryPolicy
 
     init(http: HTTPClient, apiBase: URL, uploadPolicy: RetryPolicy) {
@@ -32,10 +32,9 @@ public struct CustomCatalog: Sendable {
     /// There is no public list/delete endpoint; track `audioID` <-> song
     /// mappings on your side.
     ///
-    /// Upload is metered, so this method uses a no-retry policy: a 5xx or
-    /// pre-upload transport failure surfaces directly to the caller. The
-    /// caller decides whether to retry, with full visibility into how many
-    /// attempts have been billed.
+    /// The upload is sent once and never retried automatically: a 5xx or a
+    /// transport failure is thrown to you. Check the error before sending it
+    /// again (an upload to an `audioID` that already holds a song replaces it).
     public func add(audioID: Int, source: Source) async throws {
         let reopen = try prepareSource(source)
         let envelope = try await runWithRetry(policy: uploadPolicy) {

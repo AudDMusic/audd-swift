@@ -29,7 +29,7 @@ struct StreamsLongpollExample {
             defer {
                 Task { await audd.close() }
             }
-            let streams = await audd.streams
+            let streams = audd.streams
             let category = streams.deriveLongpollCategory(radioID: radioID)
             print("Longpoll category for radio \(radioID): \(category)")
 

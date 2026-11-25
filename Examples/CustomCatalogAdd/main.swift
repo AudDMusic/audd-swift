@@ -33,7 +33,7 @@ struct CustomCatalogAddExample {
             defer {
                 Task { await audd.close() }
             }
-            let catalog = await audd.customCatalog
+            let catalog = audd.customCatalog
             try await catalog.add(audioID: audioID, source: .file(fileURL))
             print("Added audioID \(audioID) from \(fileURL.path)")
         } catch let AudDError.api(detail) where detail.kind == .customCatalogAccess {

@@ -191,7 +191,7 @@ final class StreamsTests: XCTestCase {
             throw MockHandlerSkip.skip
         }
         let audd = try AudD(apiToken: "test", urlSession: session)
-        let expected = await audd.streams.deriveLongpollCategory(radioID: 1)
+        let expected = audd.streams.deriveLongpollCategory(radioID: 1)
 
         let poll = try await audd.streams.longpoll(
             radioID: 1,
@@ -204,6 +204,92 @@ final class StreamsTests: XCTestCase {
         XCTAssertEqual(capturedCategory, expected)
         XCTAssertEqual(expected.count, 9)
         await audd.close()
+    }
+
+    func testLongpollRequestNeverCarriesTheToken() async throws {
+        let token = "longpoll-secret-token-123"
+        let session = mockSession()
+        let payload = try fixtureData("longpoll_no_events.json")
+        MockURLProtocol.register { request in
+            (makeJSONResponse(request.url!, body: payload), payload)
+        }
+        let audd = try AudD(apiToken: token, urlSession: session)
+        let poll = try await audd.streams.longpoll(
+            radioID: 1,
+            options: LongpollOptions(timeout: 90, skipCallbackCheck: true)
+        )
+        let sawTwo = await waitUntil { MockURLProtocol.requestLog.count >= 2 }
+        XCTAssertTrue(sawTwo)
+        await poll.close()
+
+        for request in MockURLProtocol.requestLog {
+            XCTAssertTrue(request.url?.path.contains("longpoll") ?? false)
+            XCTAssertFalse(request.url?.absoluteString.contains(token) ?? true)
+            XCTAssertFalse(request.url?.absoluteString.contains("api_token") ?? true)
+            for (name, value) in request.allHTTPHeaderFields ?? [:] {
+                XCTAssertFalse(value.contains(token), "header \(name) carries the token")
+            }
+            XCTAssertNil(MockURLProtocol.bodyData(for: request).flatMap { $0.isEmpty ? nil : $0 })
+            // The server may hold the request for 90 s; the client waits longer.
+            XCTAssertEqual(request.timeoutInterval, 105, accuracy: 0.001)
+        }
+        let second = URLComponents(url: MockURLProtocol.requestLog[1].url!, resolvingAgainstBaseURL: false)
+        XCTAssertEqual(second?.queryItems?.first { $0.name == "since_time" }?.value, "1777901270049")
+        await audd.close()
+    }
+
+    func testCachedStreamsUsesTheRotatedToken() async throws {
+        let audd = try AudD(apiToken: "old-token")
+        let streams = audd.streams
+        try await audd.setApiToken("new-token")
+        XCTAssertEqual(
+            streams.deriveLongpollCategory(radioID: 5),
+            Audd_deriveLongpollCategory(apiToken: "new-token", radioID: 5)
+        )
+        await audd.close()
+    }
+
+    func testParseCallbackNeedsNoAwait() throws {
+        // A synchronous webhook handler can reach the parser directly.
+        func handle(_ audd: AudD, _ body: Data) throws -> CallbackEvent {
+            return try audd.streams.parseCallback(body)
+        }
+        let audd = try AudD(apiToken: "test")
+        let event = try handle(audd, try fixtureData("streams_callback_with_result.json"))
+        guard case .match(let match) = event else {
+            return XCTFail("expected .match, got \(event)")
+        }
+        XCTAssertEqual(match.radioID, 7)
+    }
+
+    func testSetCallbackURLKeepsPlusAndAmpersandInTheURL() async throws {
+        let session = mockSession()
+        let payload = Data("{\"status\":\"success\",\"result\":null}".utf8)
+        MockURLProtocol.register { request in
+            (makeJSONResponse(request.url!, body: payload), payload)
+        }
+        let audd = try AudD(apiToken: "test", urlSession: session)
+        let callback = "https://example.com/cb?sig=a+b/c=&x=1 2"
+        try await audd.streams.setCallbackURL(callback)
+
+        let request = try XCTUnwrap(MockURLProtocol.requestLog.first)
+        let body = String(decoding: try XCTUnwrap(MockURLProtocol.bodyData(for: request)), as: UTF8.self)
+        XCTAssertFalse(body.contains("+"), "a literal + would be read as a space")
+        // Decode the way a form parser does.
+        var fields: [String: String] = [:]
+        for pair in body.split(separator: "&") {
+            let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
+            let decode = { (s: String) in s.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? s }
+            fields[decode(parts[0])] = parts.count > 1 ? decode(parts[1]) : ""
+        }
+        XCTAssertEqual(fields["url"], callback)
+        XCTAssertEqual(fields["api_token"], "test")
+        await audd.close()
+    }
+
+    func testFormEncodingEscapesEverythingButUnreserved() {
+        XCTAssertEqual(formURLEncode("aZ09-._~"), "aZ09-._~")
+        XCTAssertEqual(formURLEncode("a+b&c=d e/é"), "a%2Bb%26c%3Dd%20e%2F%C3%A9")
     }
 
     func testLongpollByCategoryStillWorks() async throws {

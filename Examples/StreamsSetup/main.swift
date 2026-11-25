@@ -23,7 +23,7 @@ struct StreamsSetupExample {
 
             // Configure a callback URL on your account. Use https://audd.tech/empty/
             // if you only want longpolling and don't need a real receiver.
-            let streams = await audd.streams
+            let streams = audd.streams
             try await streams.setCallbackURL("https://your-server.example.com/audd-callback")
 
             // Subscribe a stream URL for live recognition. radioID is your

@@ -25,23 +25,23 @@ final class RetryTests: XCTestCase {
         // MUTATING retries nothing on status (side effects may have happened)
         XCTAssertFalse(shouldRetryStatus(503, retryClass: .mutating))
         XCTAssertFalse(shouldRetryStatus(429, retryClass: .mutating))
-        // CRITICAL retries nothing on status (metered upload — cost protection)
+        // CRITICAL retries nothing on status (customCatalog.add is sent once)
         XCTAssertFalse(shouldRetryStatus(503, retryClass: .critical))
         XCTAssertFalse(shouldRetryStatus(500, retryClass: .critical))
     }
 
     func testCriticalPolicyClampsToOneAttempt() {
         // Even when a caller passes maxAttempts > 1, .critical hard-clamps
-        // to a single attempt. Custom-catalog upload is metered; the SDK
-        // must never silently re-send.
+        // to a single attempt: customCatalog.add is never re-sent
+        // automatically.
         let p = RetryPolicy(retryClass: .critical, maxAttempts: 5)
         XCTAssertEqual(p.maxAttempts, 1)
     }
 
     func testCriticalPolicyDoesNotRetryConnectErrors() {
         // Connect-class URLErrors are retry-eligible under .recognition and
-        // .mutating, but .critical never retries them: a failed attempt may
-        // still have been billed, and a silent re-send could double-charge.
+        // .mutating, but .critical never retries them: the caller checks the
+        // error and decides whether to send the upload again.
         let err = URLError(.cannotConnectToHost)
         XCTAssertFalse(shouldRetryError(err, retryClass: .critical))
         // Sanity-check: same error IS retryable for .mutating.

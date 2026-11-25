@@ -33,28 +33,35 @@ is a convenience factory for the env-var path.
 
 ### Capabilities
 
-- **Recognition** — ``AudD/recognize(_:return:market:)-7jkwp`` analyzes the
-  first 12 seconds of audio; ``AudD/recognizeEnterprise(_:return:skip:every:limit:skipFirstSeconds:useTimecode:accurateOffsets:)``
+- **Recognition** — `recognize(_:returnMetadata:market:extraParameters:)`
+  analyzes the first 12 seconds of audio;
+  ``AudD/recognizeEnterprise(_:returnMetadata:skip:every:limit:skipFirstSeconds:useTimecode:accurateOffsets:extraParameters:)``
   scans the whole file.
 - **Custom catalog** — ``CustomCatalog/add(audioID:source:)`` adds songs to your
   private fingerprint database. Enterprise access required; this is **not**
   for music recognition.
 - **Streams** — subscribe live audio streams and receive recognition events:
-  ``Streams/add(url:radioID:callbacks:)``, ``Streams/longpoll(category:options:)``,
+  ``Streams/add(url:radioID:callbacks:extraParameters:)``, ``Streams/longpoll(category:options:)``,
   ``Streams/parseCallback(_:)``.
 - **Lyrics** — ``Advanced/findLyrics(_:)``.
-- **Inspection hook** — ``AudDEvent`` lifecycle events delivered to an opt-in
-  `onEvent` callback for tracing.
+- **Inspection hook** — ``AudDEvent`` lifecycle events for `recognize` and
+  `recognizeEnterprise`, delivered to an opt-in `onEvent` callback for tracing.
 - **Forward-compatible models** — every model exposes typed fields plus an
   `extras` dictionary and `rawResponse` for unknown keys.
 - **Cost-aware retry** — recognition endpoints don't retry post-upload read
   timeouts (cost protection); mutating endpoints don't retry on 5xx (the side
-  effect may have happened).
+  effect may have happened); `customCatalog.add` is never retried
+  automatically.
 
 ### Concurrency
 
 - ``AudD`` is an `actor`. All methods are `async`. State (api_token, retry
-  policy, sessions) is actor-isolated.
+  policy, sessions) is actor-isolated. The ``AudD/streams``,
+  ``AudD/customCatalog`` and ``AudD/advanced`` namespaces are `nonisolated`,
+  so reaching them needs no `await`, and they always use the client's current
+  api_token.
+- Cancelling a task cancels the request it is waiting on and throws
+  `CancellationError`.
 - Every model and namespace (``Streams``, ``CustomCatalog``, ``Advanced``)
   conforms to `Sendable`.
 - The `onEvent` hook is `@Sendable (AudDEvent) -> Void`.

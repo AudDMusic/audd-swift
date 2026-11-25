@@ -18,6 +18,9 @@ jobs:
   contract:
     name: validate parser against latest audd-openapi fixtures
     runs-on: ubuntu-latest
+    # The official Swift image carries the toolchain's own system libraries, so
+    # the job doesn't depend on what the runner image happens to ship.
+    container: swift:5.10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,14 +30,11 @@ jobs:
           repository: AudDMusic/audd-openapi
           path: audd-openapi
           ref: main
-      - uses: SwiftyLab/setup-swift@latest
-        with:
-          swift-version: '5.10'
       - name: Run contract tests
         working-directory: audd-swift
-        env:
-          AUDD_OPENAPI_FIXTURES: ${{ github.workspace }}/audd-openapi/fixtures
-        run: swift test --filter 'Contract'
+        # GITHUB_WORKSPACE is the path inside the container; the
+        # github.workspace expression is the path on the host.
+        run: AUDD_OPENAPI_FIXTURES="$GITHUB_WORKSPACE/audd-openapi/fixtures" swift test --filter 'Contract'
       - name: Report drift issue
         if: failure() && github.event_name != 'pull_request'
         uses: actions/github-script@v7

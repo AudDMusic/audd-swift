@@ -27,10 +27,11 @@ struct RecognizeEnterpriseExample {
             defer {
                 Task { await audd.close() }
             }
-            // limit=1 in dev/testing to bound cost (1 chunk ≈ 18 s of audio).
+            // Each 12-second chunk scanned counts as a request: keep the
+            // limit small while you try this out, and drop it to scan the
+            // whole file.
             let matches = try await audd.recognizeEnterprise(
                 .file(fileURL),
-                returnMetadata: ["apple_music", "spotify"],
                 limit: 1
             )
             if matches.isEmpty {

@@ -4,11 +4,12 @@
 // user/server who derived the category is responsible for ensuring a callback
 // URL is set on their account (we can't preflight that without a token).
 //
-// Hardening (spec §6.7):
-// * HTTP non-2xx → emits AudDError.serverError on the LongpollPoll's `errors` stream
-// * JSON decode failure → emits AudDError.serializationError on `errors`
-// * READ-class retries on 5xx + connection errors (spec parity)
-// * Configurable maxAttempts / backoffFactor
+// Behaviour (shared with Streams.longpoll, see LongpollPoll):
+// * events are delivered in order; unparseable events are skipped
+// * since_time follows the newest timestamp the server sent
+// * a response with nothing new is followed by a 1 s → 30 s backoff
+// * an `{"error": ...}` body or HTTP 4xx ends the subscription on `errors`
+// * READ-class retries on 5xx + connection errors, `maxRetries` attempts
 //
 // `iterate(...)` returns a ``LongpollPoll`` — same shape as
 // ``Streams/longpoll(category:options:)``: typed `matches` / `notifications` /
@@ -25,6 +26,8 @@
 @preconcurrency import FoundationNetworking
 #endif
 
+/// Subscribes to longpoll events with only a category, no api_token. See
+/// ``LongpollPoll`` for how responses are handled.
 public final class LongpollConsumer: @unchecked Sendable {
     /// Default longpoll endpoint. Computed (not stored) to sidestep the Swift
     /// 5.10 strict-concurrency warning on a `static let` of a non-`Sendable`
@@ -33,11 +36,17 @@ public final class LongpollConsumer: @unchecked Sendable {
     public static var longpollURL: URL { URL(string: "https://api.audd.io/longpoll/")! }
 
     private let category: String
-    private let session: URLSession
-    private let ownsSession: Bool
+    private let session: ManagedSession
     private let policy: RetryPolicy
     private let endpoint: URL
 
+    /// - Parameters:
+    ///   - category: the 9-char longpoll category.
+    ///   - urlSession: inject your own session (proxy, pinning). Each request
+    ///     sets its own `timeoutInterval` from the poll's `timeout`.
+    ///   - maxRetries: total attempts per request on network failures and
+    ///     HTTP 408 / 429 / 5xx before the subscription ends on `errors`.
+    ///   - backoffFactor: initial pause between those attempts, in seconds.
     public init(
         category: String,
         urlSession: URLSession? = nil,
@@ -47,16 +56,7 @@ public final class LongpollConsumer: @unchecked Sendable {
     ) {
         self.category = category
         self.endpoint = endpoint
-        if let urlSession {
-            self.session = urlSession
-            self.ownsSession = false
-        } else {
-            let config = URLSessionConfiguration.default
-            config.timeoutIntervalForRequest = HTTPRequestTimeouts.longpoll.connect
-            config.timeoutIntervalForResource = HTTPRequestTimeouts.longpoll.resource
-            self.session = URLSession(configuration: config)
-            self.ownsSession = true
-        }
+        self.session = ManagedSession(urlSession: urlSession, timeouts: .longpoll)
         self.policy = RetryPolicy(retryClass: .read, maxAttempts: maxRetries, backoffFactor: backoffFactor)
     }
 
@@ -67,9 +67,11 @@ public final class LongpollConsumer: @unchecked Sendable {
         let session = self.session
         let endpoint = self.endpoint
         let policy = self.policy
-        let fetch: @Sendable (_ params: [String: String]) async throws -> HTTPResponseEnvelope = { params in
+        let fetch: LongpollFetch = { params, requestTimeout in
             return try await withRetry(policy: policy) {
-                let env = try await fetchLongpoll(session: session, endpoint: endpoint, params: params)
+                let request = makeGETRequest(url: endpoint, params: params, timeout: requestTimeout)
+                let (data, response) = try await performDataTask(session: session, request: request)
+                let env = HTTPResponseEnvelope.parse(data: data, response: response)
                 if shouldRetryStatus(env.httpStatus, retryClass: policy.retryClass) {
                     return RetryableResponse<HTTPResponseEnvelope>.retryable(status: env.httpStatus, rawText: env.rawText, requestID: env.requestID)
                 }
@@ -79,37 +81,11 @@ public final class LongpollConsumer: @unchecked Sendable {
         return LongpollPoll(category: category, options: options, fetch: fetch)
     }
 
+    /// Release the consumer's `URLSession`. When the consumer created the
+    /// session, a request still waiting on the server is cancelled and the
+    /// polls started from this consumer end; with an injected `urlSession`,
+    /// stop each poll with ``LongpollPoll/close()``. Idempotent.
     public func close() {
-        if ownsSession {
-            session.finishTasksAndInvalidate()
-        }
-    }
-
-    deinit {
-        close()
-    }
-}
-
-private func fetchLongpoll(session: URLSession, endpoint: URL, params: [String: String]) async throws -> HTTPResponseEnvelope {
-    var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
-    components.queryItems = params.map { URLQueryItem(name: $0.key, value: $0.value) }
-    let url = components.url ?? endpoint
-    var request = URLRequest(url: url)
-    request.httpMethod = "GET"
-    request.setValue(UserAgent.string(), forHTTPHeaderField: "User-Agent")
-
-    return try await withCheckedThrowingContinuation { continuation in
-        let task = session.dataTask(with: request) { data, response, error in
-            if let error {
-                continuation.resume(throwing: error)
-                return
-            }
-            guard let data, let response else {
-                continuation.resume(throwing: URLError(.badServerResponse))
-                return
-            }
-            continuation.resume(returning: HTTPResponseEnvelope.parse(data: data, response: response))
-        }
-        task.resume()
+        session.close(cancelRunning: true)
     }
 }

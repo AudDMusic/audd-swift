@@ -46,10 +46,9 @@ final class CustomCatalogTests: XCTestCase {
         await audd.close()
     }
 
-    /// Custom-catalog upload is metered. A 5xx must surface immediately as a
-    /// single attempt, even when the caller configured the SDK with a higher
-    /// `maxRetries`. Auto-retry on a metered upload could double-charge for
-    /// the same fingerprinting work.
+    /// customCatalog.add is never retried automatically. A 5xx must surface
+    /// immediately as a single attempt, even when the caller configured the
+    /// SDK with a higher `maxRetries`.
     func testCustomCatalogAdd5xxDoesNotRetry() async throws {
         let session = mockSession()
         let attemptsLock = NSLock()
@@ -71,14 +70,12 @@ final class CustomCatalogTests: XCTestCase {
         } catch {
             XCTFail("unexpected: \(error)")
         }
-        XCTAssertEqual(attempts, 1, "customCatalog.add must not retry on 5xx (metered upload)")
+        XCTAssertEqual(attempts, 1, "customCatalog.add must not retry on 5xx")
         await audd.close()
     }
 
-    /// A pre-upload transport failure must also surface as a single attempt.
-    /// We don't retry connect errors either: a "failed" attempt may still
-    /// count server-side, and a silent re-send is precisely what could
-    /// double-charge.
+    /// A pre-upload transport failure must also surface as a single attempt:
+    /// the caller checks the error before sending the upload again.
     func testCustomCatalogAddConnectErrorDoesNotRetry() async throws {
         let session = mockSession()
         let attemptsLock = NSLock()
@@ -100,7 +97,7 @@ final class CustomCatalogTests: XCTestCase {
         } catch {
             XCTFail("unexpected: \(error)")
         }
-        XCTAssertEqual(attempts, 1, "customCatalog.add must not retry on transport failure (metered upload)")
+        XCTAssertEqual(attempts, 1, "customCatalog.add must not retry on transport failure")
         await audd.close()
     }
 }

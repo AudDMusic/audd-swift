@@ -268,7 +268,7 @@ struct StreamToCsvApp {
             Task { await audd.close() }
         }
 
-        let streams = await audd.streams
+        let streams = audd.streams
 
         // Stage 1: callback-URL handling per mode.
         var provisioned: CallbackProvision = .alreadySet

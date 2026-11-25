@@ -5,7 +5,7 @@
 ## Overview
 
 A successful match comes with a `songLink` and (when the caller passed
-`return: ["apple_music", ...]`) one or more typed metadata blocks. The SDK
+`returnMetadata: ["apple_music", ...]`) one or more typed metadata blocks. The SDK
 exposes three helpers that pick the right URL out of these without you having
 to re-implement provider-specific routing:
 
@@ -25,7 +25,7 @@ lis.tn-redirect-only.
 For each provider, the SDK picks the *best* URL in this order:
 
 1. **Direct URL** from the metadata block (when the caller asked for it via
-   `return: ["apple_music", ...]`). Direct = no redirect, fastest for clients.
+   `returnMetadata: ["apple_music", ...]`). Direct = no redirect, fastest for clients.
    - `.appleMusic` → `apple_music.url`
    - `.spotify` → `spotify.external_urls.spotify`, then `spotify.uri`
    - `.deezer` → `deezer.link`
@@ -39,7 +39,7 @@ For each provider, the SDK picks the *best* URL in this order:
 ```swift
 let result = try await audd.recognize(
     .url(URL(string: "https://audd.tech/example.mp3")!),
-    return: ["apple_music", "spotify"]
+    returnMetadata: ["apple_music", "spotify"]
 )
 
 // One provider:

@@ -13,6 +13,9 @@ jobs:
   test-linux:
     name: tests (Linux, Swift ${{ matrix.swift }})
     runs-on: ubuntu-latest
+    # The official Swift images carry the toolchain's own system libraries, so
+    # the job doesn't depend on what the runner image happens to ship.
+    container: swift:${{ matrix.swift }}
     strategy:
       fail-fast: false
       matrix:
@@ -21,9 +24,6 @@ jobs:
         swift: ['5.10', '6.0']
     steps:
       - uses: actions/checkout@v4
-      - uses: SwiftyLab/setup-swift@latest
-        with:
-          swift-version: ${{ matrix.swift }}
       - name: swift build
         run: swift build
       - name: swift test

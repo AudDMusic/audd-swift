@@ -5,6 +5,14 @@
 // recognitions, `notifications` for stream-lifecycle events, `errors` for the
 // terminal failure. Call `await poll.close()` to tear down.
 //
+// The longpoll endpoint answers HTTP 200 with one of three bodies:
+//   {"events": [{"timestamp": ms, "category": "...", "data": {...}}, ...]}
+//       each `data` is the body a callback URL receives;
+//   {"timeout": "no events before timeout", "timestamp": ms}
+//   {"error": "..."}  an invalid request; the same request fails again.
+// A body with `result` / `notification` at the top level is read as one
+// callback body.
+//
 // The longpoll preflight (default-on) calls getCallbackUrl once before
 // subscribing; when the server returns code 19, we surface a friendlier
 // `AudDError.api(.invalidRequest)` with a URL-config hint. Pass
@@ -28,9 +36,12 @@ To skip this check, pass LongpollOptions(skipCallbackCheck: true).
 /// Options for ``Streams/longpoll(category:options:)``. All fields default to
 /// safe values; pass an instance only when you need to override one.
 public struct LongpollOptions: Sendable {
-    /// Resume from this server-supplied unix timestamp. `nil` means "start from now".
+    /// Resume after this server timestamp (milliseconds), as carried by a
+    /// longpoll event or timeout response. `nil` means "start from now".
     public var sinceTime: Int?
-    /// Per-request long-poll timeout in seconds (server-side default: 50).
+    /// Seconds the server holds each request open waiting for events: 1 to
+    /// 120, default 50. A value outside that range ends the subscription with
+    /// the server's error on `errors`.
     public var timeout: Int
     /// When `false` (default), preflights `getCallbackURL` once before
     /// subscribing — surfaces a friendly error for the silent-failure mode
@@ -46,15 +57,17 @@ public struct LongpollOptions: Sendable {
 
 public struct Streams: Sendable {
     let http: HTTPClient
+    /// Client for longpoll requests: its session allows the server's longest
+    /// hold. Never adds the api_token.
+    let longpollHTTP: HTTPClient
     let apiBase: URL
-    let apiToken: String
     let readPolicy: RetryPolicy
     let mutatingPolicy: RetryPolicy
 
-    init(http: HTTPClient, apiBase: URL, apiToken: String, readPolicy: RetryPolicy, mutatingPolicy: RetryPolicy) {
+    init(http: HTTPClient, longpollHTTP: HTTPClient, apiBase: URL, readPolicy: RetryPolicy, mutatingPolicy: RetryPolicy) {
         self.http = http
+        self.longpollHTTP = longpollHTTP
         self.apiBase = apiBase
-        self.apiToken = apiToken
         self.readPolicy = readPolicy
         self.mutatingPolicy = mutatingPolicy
     }
@@ -128,10 +141,10 @@ public struct Streams: Sendable {
         return try arr.map { try decode(Stream.self, from: $0) }
     }
 
-    /// Compute the 9-char longpoll category locally from `apiToken` + `radioID`.
-    /// Formula: `md5(md5(apiToken) + str(radioID))[..9]`.
+    /// Compute the 9-char longpoll category locally from the client's current
+    /// api_token and `radioID`. Formula: `md5(md5(apiToken) + str(radioID))[..9]`.
     public func deriveLongpollCategory(radioID: Int) -> String {
-        return Audd_deriveLongpollCategory(apiToken: apiToken, radioID: radioID)
+        return Audd_deriveLongpollCategory(apiToken: http.apiToken, radioID: radioID)
     }
 
     /// Parse a webhook callback POST body into a typed match or notification.
@@ -153,7 +166,10 @@ public struct Streams: Sendable {
     /// Returns a ``LongpollPoll`` whose `matches` / `notifications` / `errors`
     /// `AsyncStream`s are filled by a background task. The task exits when
     /// `await poll.close()` is called or a terminal error fires (which is
-    /// emitted on `errors` and then closes all three streams).
+    /// emitted on `errors` and then closes all three streams). See
+    /// ``LongpollPoll`` for how responses are handled.
+    ///
+    /// The longpoll requests carry no api_token: the category authorizes them.
     ///
     /// On entry, runs a preflight `getCallbackURL()` unless
     /// ``LongpollOptions/skipCallbackCheck`` is set — catches the common
@@ -182,7 +198,7 @@ public struct Streams: Sendable {
             }
         }
         let endpoint = apiBase.appendingPathComponent("/longpoll").appendingPathComponent("/")
-        let fetch = makeAuthenticatedLongpollFetch(http: http, endpoint: endpoint, policy: readPolicy)
+        let fetch = makeLongpollFetch(http: longpollHTTP, endpoint: endpoint, policy: readPolicy)
         return LongpollPoll(
             category: category,
             options: options,
@@ -200,7 +216,7 @@ public struct Streams: Sendable {
     /// ``longpoll(category:options:)`` directly.
     ///
     /// - Parameters:
-    ///   - radioID: the stream's radio_id (as returned by ``add(url:radioID:callbacks:)``).
+    ///   - radioID: the stream's radio_id (as passed to ``add(url:radioID:callbacks:extraParameters:)``).
     ///   - options: subscription options. Defaults to "start from now, 50s
     ///     timeout, preflight on".
     public func longpoll(radioID: Int, options: LongpollOptions = LongpollOptions()) async throws -> LongpollPoll {
@@ -217,15 +233,37 @@ public struct Streams: Sendable {
 /// - ``errors`` yields a single terminal error and then closes — when an error
 ///   fires, the consumer is terminal and `matches` / `notifications` close too.
 ///
-/// Call ``close()`` to tear down the background poller and close all streams.
-/// Closing is idempotent.
+/// Each event the server returns is delivered in order; an event that can't
+/// be parsed, or a recognition with an empty `results` list, is skipped. The
+/// next request resumes after the newest timestamp the server sent. A
+/// response that brings no event and no newer timestamp (an unknown or
+/// non-JSON body) is followed by a pause before the next request, starting at
+/// 1 second and doubling up to 30 seconds. The subscription ends with an error
+/// on ``errors`` when the server rejects the request (for example a `timeout`
+/// outside 1-120, as ``AudDError/api(_:)`` with kind `.invalidRequest` and the
+/// server's text), on an HTTP 4xx, and when network failures or HTTP 5xx
+/// responses outlast the retry budget.
+///
+/// Call ``close()`` to tear down the background poller and close all streams;
+/// it also cancels a request the server is still holding open. Closing is
+/// idempotent.
 ///
 /// Sample usage:
 /// ```swift
 /// let poll = try await audd.streams.longpoll(category: cat)
 /// defer { Task { await poll.close() } }
-/// for await match in poll.matches {
-///     print("\(match.song?.artist ?? "?") — \(match.song?.title ?? "?")")
+///
+/// await withTaskGroup(of: Void.self) { group in
+///     group.addTask {
+///         for await match in poll.matches {
+///             print("\(match.song?.artist ?? "?") — \(match.song?.title ?? "?")")
+///         }
+///     }
+///     group.addTask {
+///         for await error in poll.errors {
+///             print("longpoll stopped: \(error.localizedDescription)")
+///         }
+///     }
 /// }
 /// ```
 public actor LongpollPoll {
@@ -246,7 +284,9 @@ public actor LongpollPoll {
     init(
         category: String,
         options: LongpollOptions,
-        fetch: @escaping @Sendable (_ params: [String: String]) async throws -> HTTPResponseEnvelope
+        fetch: @escaping LongpollFetch,
+        idleBackoff: LongpollIdleBackoff = LongpollIdleBackoff(),
+        sleep: @escaping LongpollSleep = longpollTaskSleep
     ) {
         var matchesCont: AsyncStream<StreamCallbackMatch>.Continuation!
         let matches = AsyncStream<StreamCallbackMatch> { c in matchesCont = c }
@@ -275,6 +315,8 @@ public actor LongpollPoll {
                 sinceTime: sinceTime,
                 timeout: timeout,
                 fetch: fetch,
+                idleBackoff: idleBackoff,
+                sleep: sleep,
                 matches: mc,
                 notifications: nc,
                 errors: ec
@@ -282,7 +324,8 @@ public actor LongpollPoll {
         }
     }
 
-    /// Stop the background poll. Idempotent.
+    /// Stop the background poll and cancel a request that is still waiting on
+    /// the server. Idempotent.
     public func close() async {
         if didClose { return }
         didClose = true
@@ -295,15 +338,43 @@ public actor LongpollPoll {
     }
 }
 
+/// One longpoll GET: the query parameters and the request's timeout.
+typealias LongpollFetch = @Sendable (_ params: [String: String], _ requestTimeout: TimeInterval) async throws -> HTTPResponseEnvelope
+
+/// Pause used between longpoll requests; throws when the poll is cancelled.
+typealias LongpollSleep = @Sendable (_ seconds: Double) async throws -> Void
+
+let longpollTaskSleep: LongpollSleep = { seconds in
+    try await Task.sleep(nanoseconds: UInt64(max(seconds, 0) * 1_000_000_000))
+}
+
+/// Pause schedule after responses that bring nothing new: `initial` seconds,
+/// doubling up to `maximum`, back to `initial` once a response delivers an
+/// event or a newer timestamp.
+struct LongpollIdleBackoff: Sendable {
+    var initial: Double = 1
+    var maximum: Double = 30
+}
+
+/// What one longpoll response yields.
+enum LongpollOutcome {
+    /// Events to deliver in order, and the `since_time` for the next request
+    /// (`nil`: keep the current one).
+    case delivered([CallbackEvent], nextSinceTime: Int?)
+    /// The subscription ends with this error.
+    case terminal(Error)
+}
+
 /// Run the long-poll loop. Drives one iteration per server response, parses
-/// each into a match or notification, dispatches onto the typed streams. On
+/// it into matches and notifications, dispatches onto the typed streams. On
 /// terminal error, sends a single error and closes all three streams.
-@Sendable
 func runLongpollLoop(
     category: String,
     sinceTime: Int?,
     timeout: Int,
-    fetch: @escaping @Sendable (_ params: [String: String]) async throws -> HTTPResponseEnvelope,
+    fetch: @escaping LongpollFetch,
+    idleBackoff: LongpollIdleBackoff = LongpollIdleBackoff(),
+    sleep: @escaping LongpollSleep = longpollTaskSleep,
     matches: AsyncStream<StreamCallbackMatch>.Continuation,
     notifications: AsyncStream<StreamCallbackNotification>.Continuation,
     errors: AsyncStream<Error>.Continuation
@@ -314,78 +385,174 @@ func runLongpollLoop(
         errors.finish()
     }
     var cursor = sinceTime
+    var nextIdleDelay = idleBackoff.initial
+    let requestTimeout = longpollRequestTimeout(timeout)
     while !Task.isCancelled {
         var params: [String: String] = ["category": category, "timeout": String(timeout)]
         if let cursor { params["since_time"] = String(cursor) }
         let env: HTTPResponseEnvelope
         do {
-            env = try await fetch(params)
-        } catch is CancellationError {
-            return
-        } catch let urlError as URLError where urlError.code == .cancelled {
-            return
+            env = try await fetch(params, requestTimeout)
         } catch {
+            // Closing the poll, or the client or consumer behind it, ends
+            // the loop without an error.
+            if Task.isCancelled || isShutdown(error) { return }
             errors.yield(error)
             return
         }
-        if env.httpStatus >= AudDErrorCodes.httpClientErrorFloor {
-            errors.yield(AudDError.serverError(
-                httpStatus: env.httpStatus,
-                message: "Longpoll endpoint returned HTTP \(env.httpStatus)",
-                requestID: env.requestID,
-                rawText: env.rawText
-            ))
+        if Task.isCancelled { return }
+
+        switch classifyLongpollResponse(env) {
+        case .terminal(let error):
+            errors.yield(error)
             return
-        }
-        guard let body = env.jsonBody else {
-            errors.yield(AudDError.serializationError(
-                message: "Longpoll response was not a JSON object",
-                rawText: env.rawText
-            ))
-            return
-        }
-        // Distinguish the three possible envelope shapes:
-        //   { "result": ... }         → recognition match
-        //   { "notification": ... }   → lifecycle notification
-        //   { "timeout": "..." }      → benign no-events tick (server timeout)
-        if body["result"] != nil || body["notification"] != nil {
-            guard let data = env.rawText.data(using: .utf8) else {
-                errors.yield(AudDError.serializationError(
-                    message: "Longpoll response could not be re-encoded for parsing",
-                    rawText: env.rawText
-                ))
-                return
-            }
-            do {
-                let parsed = try Audd_parseCallback(data)
-                switch parsed {
+        case .delivered(let events, let nextSinceTime):
+            for event in events {
+                switch event {
                 case .match(let m):
                     matches.yield(m)
                 case .notification(let n):
                     notifications.yield(n)
                 }
-            } catch {
-                errors.yield(error)
-                return
+            }
+            let advanced = nextSinceTime.map { $0 != cursor } ?? false
+            if let nextSinceTime { cursor = nextSinceTime }
+            if !events.isEmpty || advanced {
+                nextIdleDelay = idleBackoff.initial
+                continue
             }
         }
-        // No-event ticks: fall through to advance cursor.
-        if let ts = body["timestamp"] as? Int {
-            cursor = ts
+
+        // Nothing new: wait before asking again.
+        let delay = nextIdleDelay
+        nextIdleDelay = min(nextIdleDelay * 2, idleBackoff.maximum)
+        AudDLog.warning(
+            "longpoll response had no events and no new timestamp; next request in \(Int(delay.rounded())) s",
+            category: "longpoll"
+        )
+        do {
+            try await sleep(delay)
+        } catch {
+            return
         }
     }
 }
 
-/// Build the authenticated longpoll fetch closure used by ``Streams/longpoll(category:options:)``.
-@Sendable
-func makeAuthenticatedLongpollFetch(
+/// `true` for the errors a request ends with when it was cancelled or its
+/// client was closed.
+func isShutdown(_ error: Error) -> Bool {
+    if error is CancellationError || error is ClientClosedError { return true }
+    if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+    if case AudDError.connection(_, let underlying?) = error {
+        return isShutdown(underlying)
+    }
+    return false
+}
+
+/// Interpret one longpoll HTTP response. See the file header for the shapes.
+func classifyLongpollResponse(_ env: HTTPResponseEnvelope) -> LongpollOutcome {
+    let body = env.jsonBody
+    if env.httpStatus >= AudDErrorCodes.httpClientErrorFloor {
+        var message = "Longpoll endpoint returned HTTP \(env.httpStatus)"
+        if let text = body?["error"] as? String, !text.isEmpty {
+            message += ": \(text)"
+        }
+        return .terminal(AudDError.serverError(
+            httpStatus: env.httpStatus,
+            message: message,
+            requestID: env.requestID,
+            rawText: env.rawText
+        ))
+    }
+    guard let body else {
+        // Empty or non-JSON body: nothing to deliver.
+        return .delivered([], nextSinceTime: nil)
+    }
+
+    if (body["status"] as? String) == "error" {
+        return .terminal(makeAPIError(from: body, httpStatus: env.httpStatus, requestID: env.requestID))
+    }
+    if let text = body["error"] as? String {
+        // An invalid request (bad `timeout`, missing `category`, ...). The
+        // same request gets the same error, so the subscription ends here.
+        return .terminal(AudDError.api(AudDAPIErrorDetail(
+            kind: .invalidRequest,
+            errorCode: 0,
+            message: text,
+            httpStatus: env.httpStatus,
+            requestID: env.requestID,
+            rawResponse: AnyCodable(body)
+        )))
+    }
+
+    if let events = body["events"] as? [Any] {
+        var delivered: [CallbackEvent] = []
+        var newest: Int?
+        for case let event as [String: Any] in events {
+            if let ts = longpollTimestamp(event["timestamp"]) {
+                newest = max(newest ?? ts, ts)
+            }
+            if let parsed = parseLongpollEventData(event["data"]) {
+                delivered.append(parsed)
+            }
+        }
+        return .delivered(delivered, nextSinceTime: newest)
+    }
+
+    var delivered: [CallbackEvent] = []
+    if body["result"] != nil || body["notification"] != nil,
+       let parsed = parseDeliverableCallback(body) {
+        delivered.append(parsed)
+    }
+    return .delivered(delivered, nextSinceTime: longpollTimestamp(body["timestamp"]))
+}
+
+/// Parse an event's `data` (a callback body, as an object or as JSON text).
+/// `nil` when it can't be parsed or carries no song.
+private func parseLongpollEventData(_ data: Any?) -> CallbackEvent? {
+    if let object = data as? [String: Any] {
+        return parseDeliverableCallback(object)
+    }
+    if let text = data as? String,
+       let bytes = text.data(using: .utf8),
+       let object = (try? JSONSerialization.jsonObject(with: bytes, options: [.fragmentsAllowed])) as? [String: Any] {
+        return parseDeliverableCallback(object)
+    }
+    return nil
+}
+
+/// Parse a callback body for delivery on a longpoll stream. A recognition
+/// with an empty `results` list has nothing to deliver.
+private func parseDeliverableCallback(_ object: [String: Any]) -> CallbackEvent? {
+    guard let event = try? Audd_parseCallbackObject(object) else { return nil }
+    if case .match(let m) = event, m.song == nil { return nil }
+    return event
+}
+
+/// A millisecond timestamp from a JSON value: a number or a numeric string.
+func longpollTimestamp(_ value: Any?) -> Int? {
+    switch value {
+    case let s as String:
+        return Int(s.trimmingCharacters(in: .whitespaces))
+    case let i as Int:
+        return i
+    case let d as Double:
+        return d.isFinite ? Int(exactly: d.rounded(.towardZero)) : nil
+    default:
+        return nil
+    }
+}
+
+/// Build the longpoll fetch closure used by ``Streams/longpoll(category:options:)``.
+/// Requests carry no api_token.
+func makeLongpollFetch(
     http: HTTPClient,
     endpoint: URL,
     policy: RetryPolicy
-) -> @Sendable (_ params: [String: String]) async throws -> HTTPResponseEnvelope {
-    return { params in
+) -> LongpollFetch {
+    return { params, requestTimeout in
         return try await runWithRetry(policy: policy) {
-            return try await http.get(url: endpoint, params: params, includeAPIToken: false)
+            return try await http.get(url: endpoint, params: params, timeout: requestTimeout)
         }
     }
 }
@@ -422,6 +589,12 @@ func Audd_parseCallback(_ data: Data) throws -> CallbackEvent {
             rawText: String(data: data, encoding: .utf8) ?? ""
         )
     }
+    return try Audd_parseCallbackObject(raw, rawText: String(data: data, encoding: .utf8))
+}
+
+/// Parse an already-decoded callback body. `rawText` goes into the error when
+/// the body has neither a `result` nor a `notification` block.
+func Audd_parseCallbackObject(_ raw: [String: Any], rawText: String? = nil) throws -> CallbackEvent {
     let rawResponse = AnyCodable(raw)
 
     if let notifDict = raw["notification"] as? [String: Any] {
@@ -458,9 +631,12 @@ func Audd_parseCallback(_ data: Data) throws -> CallbackEvent {
         return .match(withOuter)
     }
 
+    let text = rawText
+        ?? (try? JSONSerialization.data(withJSONObject: raw)).flatMap { String(data: $0, encoding: .utf8) }
+        ?? ""
     throw AudDError.serializationError(
         message: "callback body has neither result nor notification",
-        rawText: String(data: data, encoding: .utf8) ?? ""
+        rawText: text
     )
 }
 

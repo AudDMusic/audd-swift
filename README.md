@@ -17,7 +17,7 @@ The API itself is so simple that it can easily be used even without an SDK: [doc
 `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/AudDMusic/audd-swift", from: "1.5.21"),
+.package(url: "https://github.com/AudDMusic/audd-swift", from: "1.5.22"),
 ```
 
 Get your API token at [dashboard.audd.io](https://dashboard.audd.io).
@@ -51,8 +51,10 @@ if let result = try await audd.recognize(.file(file)) {
 (distinct from a thrown error).
 
 For longer audio files (full-length songs, short-form videos, podcasts, broadcasts, DJ sets), use
-`recognizeEnterprise(_:limit:...)` — it returns `[EnterpriseMatch]`, one per
-song detected across the file.
+`recognizeEnterprise(_:limit:...)` — it scans the whole file and returns
+`[EnterpriseMatch]`, one per song detected. Every 12 seconds of audio it scans
+counts as a request, so pass a small `limit:` (the most 12-second chunks to
+scan) while you try it out.
 
 ## Authentication
 
@@ -231,18 +233,19 @@ multi-hour file processing without affecting your standard-endpoint timeouts.
 | Recognition | `recognize`, `recognizeEnterprise`, `advanced.*` | connection-class failures (DNS, connect, TLS, timeouts, dropped network) and 5xx responses |
 | Read | `streams.list`, `streams.getCallbackURL`, longpoll | any network error, plus 408, 429, and 5xx |
 | Mutating | `streams.setCallbackURL`, `streams.add`, `streams.delete` | connection-class failures only — never 5xx (the change may already have been applied) |
-| Critical | `customCatalog.add` | never retried — the upload is metered, and re-sending it could double-bill |
+| Critical | `customCatalog.add` | never retried automatically: check the error before sending it again (an upload to an `audioID` that already holds a song replaces it) |
 
 Anything outside those classes — including a failure after the server may
-already have processed the audio — is surfaced rather than retried, and
-`customCatalog.add` never retries at all: you decide whether to re-send a
-metered upload.
+already have processed the audio — is surfaced rather than retried.
+`maxRetries` counts every attempt, the first one included; `0` or `1` means a
+single attempt. Cancelling the task that awaits a call cancels its request and
+throws `CancellationError`.
 
-**Inspection.** Pass `onEvent:` to receive an `AudDEvent` for every request /
-response / exception — useful for metrics, tracing, or dropping a `requestID`
-into your logs. Events never carry the api_token or request bytes; exceptions
-raised from the hook are swallowed so observability can't break the request
-path.
+**Inspection.** Pass `onEvent:` to receive an `AudDEvent` for every
+`recognize` and `recognizeEnterprise` request / response / exception — useful
+for metrics, tracing, or dropping a `requestID` into your logs. Events never
+carry the api_token or request bytes; exceptions raised from the hook are
+swallowed so observability can't break the request path.
 
 **Concurrency.** The client is an `actor` — share one instance across tasks
 and structured-concurrency contexts; every method is `async` and serializes
@@ -336,23 +339,39 @@ preflights this for you — pass `LongpollOptions(skipCallbackCheck: true)` to
 skip if you've already verified.
 
 `longpoll(...)` returns a `LongpollPoll` with three typed `AsyncStream`s —
-matches, notifications, and a single-shot errors stream. Iterate the ones you
-care about (often concurrently in a `withTaskGroup`):
+matches, notifications, and a single-shot errors stream. Read `errors`
+alongside the streams you care about, so a subscription that stops doesn't go
+unnoticed:
 
 ```swift
-let streams = await audd.streams
 let radioID = 1 // any integer you choose — your handle for this stream
 
-let poll = try await streams.longpoll(radioID: radioID)
+let poll = try await audd.streams.longpoll(radioID: radioID)
 defer { Task { await poll.close() } }
 
-for await match in poll.matches {
-    print("\(match.song?.artist ?? "?") — \(match.song?.title ?? "?")")
+await withTaskGroup(of: Void.self) { group in
+    group.addTask {
+        for await match in poll.matches {
+            print("\(match.song?.artist ?? "?") — \(match.song?.title ?? "?")")
+        }
+    }
+    group.addTask {
+        for await error in poll.errors {
+            print("longpoll stopped: \(error.localizedDescription)")
+        }
+    }
 }
 ```
 
-A terminal failure (HTTP 5xx, malformed JSON, connection drop after retries)
-fires once on `poll.errors` and then closes all three streams.
+Each request waits up to `LongpollOptions(timeout:)` seconds (1 to 120,
+default 50) for new events, and the next one resumes after the newest event it
+received. Matches and notifications arrive in order; a response with nothing
+new is followed by a pause of 1 second, doubling up to 30. The subscription
+ends with one error on `poll.errors`, and all three streams close, when the
+server rejects the request (`AudDError.api` with kind `.invalidRequest`, for
+example a `timeout` outside 1 to 120), on an HTTP 4xx, or when network
+failures and HTTP 5xx responses outlast the retries. `await poll.close()`
+stops it and cancels the request the server is holding.
 
 `deriveLongpollCategory` is a local computation: `MD5(MD5(apiToken) + radioID)[..9]`.
 The category alone is sufficient to subscribe — the api_token is never sent
@@ -374,8 +393,17 @@ defer { consumer.close() }
 let poll = consumer.iterate()
 defer { Task { await poll.close() } }
 
-for await match in poll.matches {
-    print("\(match.song?.artist ?? "?") — \(match.song?.title ?? "?")")
+await withTaskGroup(of: Void.self) { group in
+    group.addTask {
+        for await match in poll.matches {
+            print("\(match.song?.artist ?? "?") — \(match.song?.title ?? "?")")
+        }
+    }
+    group.addTask {
+        for await error in poll.errors {
+            print("longpoll stopped: \(error.localizedDescription)")
+        }
+    }
 }
 ```
 

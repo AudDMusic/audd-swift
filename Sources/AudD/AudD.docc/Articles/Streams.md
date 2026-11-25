@@ -61,15 +61,33 @@ let category = audd.streams.deriveLongpollCategory(radioID: 42)
 let poll = try await audd.streams.longpoll(category: category)
 defer { Task { await poll.close() } }
 
-for await match in poll.matches {
-    print("\(match.song?.artist ?? "?") — \(match.song?.title ?? "?")")
+await withTaskGroup(of: Void.self) { group in
+    group.addTask {
+        for await match in poll.matches {
+            print("\(match.song?.artist ?? "?") — \(match.song?.title ?? "?")")
+        }
+    }
+    group.addTask {
+        for await error in poll.errors {
+            print("longpoll stopped: \(error.localizedDescription)")
+        }
+    }
 }
 ```
 
 Run `for await ...` loops on `poll.matches`, `poll.notifications`, and
-`poll.errors` concurrently in a `withTaskGroup` (or pick the one you care
-about). On a terminal failure, the error fires on `errors` and all three
-streams close.
+`poll.errors` concurrently in a `withTaskGroup`; read `errors` even when you
+only want matches, so a subscription that ends doesn't go unnoticed. On a
+terminal failure, the error fires on `errors` and all three streams close.
+
+Each request asks the server to wait up to ``LongpollOptions/timeout``
+seconds (1 to 120, default 50) for events, and the next request resumes after
+the newest one received. A response that brings nothing new is followed by a
+pause of 1 second, doubling up to 30. The subscription ends on `errors` when
+the server rejects the request (``AudDError/api(_:)`` with kind
+`.invalidRequest` and the server's text), on an HTTP 4xx, or when network
+failures and HTTP 5xx responses outlast the retries. Longpoll requests carry
+no api_token: the category authorizes them.
 
 The longpoll path *also* requires a callback URL to be set on your account
 (set it once via ``Streams/setCallbackURL(_:returnMetadata:)``); the SDK
@@ -89,8 +107,17 @@ defer { consumer.close() }
 let poll = consumer.iterate()
 defer { Task { await poll.close() } }
 
-for await match in poll.matches {
-    print("\(match.song?.artist ?? "?") — \(match.song?.title ?? "?")")
+await withTaskGroup(of: Void.self) { group in
+    group.addTask {
+        for await match in poll.matches {
+            print("\(match.song?.artist ?? "?") — \(match.song?.title ?? "?")")
+        }
+    }
+    group.addTask {
+        for await error in poll.errors {
+            print("longpoll stopped: \(error.localizedDescription)")
+        }
+    }
 }
 ```
 

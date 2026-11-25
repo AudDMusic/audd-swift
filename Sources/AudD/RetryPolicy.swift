@@ -10,11 +10,10 @@
 //                 DO NOT retry on 5xx (the side effect may have happened).
 //                 Server-idempotent on radioID, so a re-sent request after a
 //                 connect failure is safe.
-//   CRITICAL    — customCatalog.add: never retry on anything. Custom-catalog
-//                 upload is metered and an auto-retry on transport failure
-//                 could double-charge for the same fingerprinting work, so a
-//                 transient failure surfaces as a clean error and the caller
-//                 decides whether to retry.
+//   CRITICAL    — customCatalog.add: never retried automatically. Any
+//                 failure surfaces as an error; check it before sending the
+//                 upload again (an upload to an audio_id that already holds a
+//                 song replaces it).
 import Foundation
 
 public enum RetryClass: Sendable {
@@ -26,6 +25,7 @@ public enum RetryClass: Sendable {
 
 public struct RetryPolicy: Sendable {
     public let retryClass: RetryClass
+    /// Total attempts, the first one included. Values below 1 count as 1.
     public let maxAttempts: Int
     public let backoffFactor: Double
     public let backoffMax: Double
@@ -37,9 +37,9 @@ public struct RetryPolicy: Sendable {
         backoffMax: Double = 30.0
     ) {
         self.retryClass = retryClass
-        // .critical hard-clamps to a single attempt so a caller-supplied
-        // maxRetries can't accidentally re-bill a metered upload.
-        self.maxAttempts = retryClass == .critical ? 1 : maxAttempts
+        // At least one attempt is always made. .critical is pinned to a single
+        // attempt whatever the caller-supplied maxRetries says.
+        self.maxAttempts = retryClass == .critical ? 1 : max(1, maxAttempts)
         self.backoffFactor = backoffFactor
         self.backoffMax = backoffMax
     }
@@ -75,7 +75,8 @@ func shouldRetryError(_ error: Error, retryClass: RetryClass) -> Bool {
     let urlError = error as? URLError
     switch retryClass {
     case .read:
-        return urlError != nil
+        // A cancelled request was stopped on purpose.
+        return urlError != nil && urlError?.code != .cancelled
     case .recognition, .mutating:
         guard let code = urlError?.code else { return false }
         switch code {
@@ -91,9 +92,9 @@ func shouldRetryError(_ error: Error, retryClass: RetryClass) -> Bool {
             return false
         }
     case .critical:
-        // Custom-catalog upload is metered. We never re-send the body even on
-        // a clean pre-upload connect failure — a failed attempt can still
-        // count, and a silent retry from the SDK could double-charge.
+        // customCatalog.add is never re-sent automatically, not even after a
+        // clean pre-upload connect failure: the caller checks the error and
+        // decides whether to send it again.
         return false
     }
 }
@@ -105,6 +106,7 @@ func withRetry<T>(
 ) async throws -> T {
     var lastError: Error?
     for attempt in 0..<policy.maxAttempts {
+        try Task.checkCancellation()
         do {
             let response = try await operation()
             if let body = response.successBody {
@@ -122,7 +124,12 @@ func withRetry<T>(
             // AudDError surfaced from within the operation — surface unchanged.
             // (We use this for shaping non-retry-eligible API errors.)
             throw err
+        } catch let err as CancellationError {
+            throw err
         } catch {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
             lastError = error
             if !shouldRetryError(error, retryClass: policy.retryClass) {
                 throw AudDError.connection(message: error.localizedDescription, underlying: error)
@@ -133,7 +140,7 @@ func withRetry<T>(
         }
         let delay = backoffDelay(attempt: attempt, policy: policy)
         let nanos = UInt64(delay * 1_000_000_000)
-        try? await Task.sleep(nanoseconds: nanos)
+        try await Task.sleep(nanoseconds: nanos)
     }
     if let lastError {
         throw AudDError.connection(message: lastError.localizedDescription, underlying: lastError)

@@ -25,6 +25,9 @@ recovery path.
 - ``AudDError/configuration(_:)`` — missing api_token (no explicit value and
   `AUDD_API_TOKEN` env var unset), invalid token rotation, etc.
 
+Cancelling the task that awaits a call cancels its request and throws
+`CancellationError`, not an ``AudDError``.
+
 ### Catch by case
 
 ```swift
